@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Space Taxi — Sprachausgabe &amp; Vibration Diagnose</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #1a1440;
+    --panel: #241b57;
+    --panel-alt: #2e2470;
+    --line: #4c3fa0;
+    --text: #e8e4ff;
+    --muted: #9d93d6;
+    --accent: #7cc6fe;
+    --ok: #55dd77;
+    --warn: #ffbb44;
+    --bad: #ff5566;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    padding: 16px;
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  h1 { font-size: 18px; margin-bottom: 4px; color: var(--accent); }
+  h2 { font-size: 15px; margin: 0 0 10px; color: var(--accent); }
+
+  .lede { color: var(--muted); margin-bottom: 20px; font-size: 13px; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 14px;
+    margin-bottom: 16px;
+  }
+
+  .panel__note {
+    color: var(--muted);
+    font-size: 12px;
+    margin: 8px 0 12px;
+  }
+
+  .facts { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .facts td { padding: 3px 8px 3px 0; vertical-align: top; border-bottom: 1px solid var(--panel-alt); }
+  .facts td:first-child { color: var(--muted); white-space: nowrap; width: 1%; }
+
+  .verdict--ok   { color: var(--ok); }
+  .verdict--warn { color: var(--warn); }
+  .verdict--bad  { color: var(--bad); }
+
+  .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+
+  .btn {
+    background: var(--panel-alt);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 10px 14px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+  .btn:hover { background: var(--line); }
+  .btn:active { transform: translateY(1px); }
+  .btn--primary { border-color: var(--accent); color: var(--accent); }
+
+  .field { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 13px; }
+  .field__label { color: var(--muted); width: 130px; flex: none; }
+  .field input[type=range] { flex: 1; min-width: 120px; }
+  .field__value { width: 44px; text-align: right; color: var(--accent); }
+  .field select { flex: 1; background: var(--panel-alt); color: var(--text);
+                  border: 1px solid var(--line); border-radius: 4px; padding: 8px; font: inherit; min-height: 40px; }
+
+  .log {
+    background: #120e2e;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 10px;
+    height: 230px;
+    overflow-y: auto;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .log__line--in   { color: var(--accent); }
+  .log__line--ok   { color: var(--ok); }
+  .log__line--warn { color: var(--warn); }
+  .log__line--bad  { color: var(--bad); }
+  .log__line--dim  { color: var(--muted); }
+
+  code { background: var(--panel-alt); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>Sprachausgabe &amp; Vibration — Diagnose</h1>
+<p class="lede">
+  Isoliert die beiden Probleme aus <code>index.html</code>. Jeder Test meldet, ob die API
+  <em>fehlt</em>, ob sie <em>vorhanden ist und Erfolg meldet, aber nichts tut</em>, oder ob sie
+  <em>echt fehlschlägt</em>. Diese drei Fälle sehen von außen gleich aus und haben völlig
+  verschiedene Ursachen.
+</p>
+
+<!-- ── Umgebung ─────────────────────────────────────────── -->
+<section class="panel">
+  <h2>1 · Umgebung</h2>
+  <p class="panel__note">
+    Wird beim Laden erhoben. <code>file://</code> statt <code>http://</code> und ein fehlender
+    Secure Context schalten in manchen Browsern Funktionen ab.
+  </p>
+  <table class="facts" id="env"></table>
+</section>
+
+<!-- ── Vibration ────────────────────────────────────────── -->
+<section class="panel">
+  <h2>2 · Vibration</h2>
+  <p class="panel__note">
+    <strong>Wichtig:</strong> <code>navigator.vibrate()</code> liefert auch dann <code>true</code>,
+    wenn das Gerät gar keinen Vibrationsmotor hat. Ein <code>true</code> beweist also nichts —
+    nur ein <code>false</code> oder eine fehlende Funktion beweisen etwas. Auf Desktop-Rechnern und
+    unter iOS passiert grundsätzlich nichts. Die API kennt kein Permission-Prompt.
+  </p>
+  <table class="facts" id="vib-facts"></table>
+  <div class="btn-row">
+    <button class="btn btn--primary" data-vib="200">Einzelimpuls 200 ms</button>
+    <button class="btn" data-vib="30,70,30">Muster 30-70-30</button>
+    <button class="btn" data-vib="600">Lang 600 ms</button>
+    <button class="btn" data-vib="60,40,120">Crash-Muster (wie im Spiel)</button>
+    <button class="btn" data-vib="0">Abbrechen (0)</button>
+    <button class="btn" id="vib-rumble">Dauerrumpeln 3 s (wie Schub)</button>
+  </div>
+  <div class="log" id="vib-log"></div>
+
+  <h2 style="margin-top:18px">2b · Letzter Strohhalm für iOS</h2>
+  <p class="panel__note">
+    Safari 17.4+ erzeugt beim Umlegen eines <code>&lt;input type="checkbox" switch&gt;</code>
+    eine haptische Rückmeldung. Das ist ein <strong>Nebeneffekt des UI-Elements, keine API</strong>:
+    er lässt sich nicht programmatisch auslösen und taugt daher nicht für Crash, Landung oder Schub.
+    Der Schalter beweist nur, ob die Taptic Engine überhaupt erreichbar ist — schalte ihn ein paar
+    Mal hin und her und achte darauf, ob du etwas spürst.
+  </p>
+  <label class="haptic" style="display:flex;align-items:center;gap:12px;padding:10px 0;">
+    <input type="checkbox" switch id="haptic-switch" style="width:52px;height:32px;">
+    <span>Haptik-Schalter umlegen</span>
+  </label>
+  <div class="log" id="haptic-log" style="height:90px"></div>
+</section>
+
+<!-- ── Sprachausgabe ────────────────────────────────────── -->
+<section class="panel">
+  <h2>3 · Sprachausgabe</h2>
+  <p class="panel__note">
+    Stimmen laden asynchron — direkt nach dem Laden ist die Liste oft leer. Die Buttons
+    protokollieren jedes Event der Utterance, damit sichtbar wird, ob sie nie startet,
+    startet und sofort abbricht, oder mit Fehlercode endet.
+  </p>
+  <table class="facts" id="tts-facts"></table>
+
+  <div class="field">
+    <span class="field__label">Stimme</span>
+    <select id="tts-voice"><option>— lädt —</option></select>
+  </div>
+  <div class="field">
+    <span class="field__label">pitch</span>
+    <input type="range" id="tts-pitch" min="0" max="2" step="0.1" value="0.3">
+    <span class="field__value" id="tts-pitch-val">0.3</span>
+  </div>
+  <div class="field">
+    <span class="field__label">rate</span>
+    <input type="range" id="tts-rate" min="0.1" max="2" step="0.05" value="0.85">
+    <span class="field__value" id="tts-rate-val">0.85</span>
+  </div>
+  <div class="field">
+    <span class="field__label">volume</span>
+    <input type="range" id="tts-volume" min="0" max="1" step="0.05" value="0.9">
+    <span class="field__value" id="tts-volume-val">0.9</span>
+  </div>
+
+  <p class="panel__note">
+    <strong>Der entscheidende Vergleich für iOS ist E gegen F.</strong> Safari verlangt, dass die
+    <em>erste</em> Utterance synchron aus einem Tap stammt. Im Spiel kommt sie aus einem Timer —
+    genau wie bei E. Wenn A–D sprechen, E aber stumm bleibt und F wieder spricht, ist die Ursache
+    eindeutig gefunden.
+  </p>
+  <div class="btn-row">
+    <button class="btn btn--primary" id="tts-plain">A · Nur speak() — nackt</button>
+    <button class="btn" id="tts-cancel-first">B · cancel() + speak() — wie im Spiel</button>
+    <button class="btn" id="tts-delayed">C · cancel(), 100 ms warten, speak()</button>
+    <button class="btn" id="tts-default">D · Werkseinstellungen (pitch/rate = 1)</button>
+  </div>
+  <div class="btn-row">
+    <button class="btn btn--primary" id="tts-timer">E · Aus Timer nach 1 s — ohne Gesture</button>
+    <button class="btn btn--primary" id="tts-primed">F · Priming im Tap, dann Timer nach 1 s</button>
+    <button class="btn" id="tts-beep">Vergleich: WebAudio-Beep (anderer Kanal)</button>
+  </div>
+  <div class="btn-row">
+    <button class="btn" id="tts-stop">Stoppen</button>
+    <button class="btn" id="tts-reload-voices">Stimmen neu laden</button>
+  </div>
+  <div class="log" id="tts-log"></div>
+</section>
+
+<!-- ── Gesamtergebnis ───────────────────────────────────── -->
+<section class="panel">
+  <h2>4 · Befund</h2>
+  <p class="panel__note">Alles zusammen als Text — kopieren und zurückschicken.</p>
+  <div class="btn-row">
+    <button class="btn btn--primary" id="copy-report">Befund kopieren</button>
+    <button class="btn" id="clear-logs">Logs leeren</button>
+  </div>
+  <div class="log" id="report-log"></div>
+</section>
+
+<script>
+"use strict";
+
+// ── Logging ────────────────────────────────────────────────
+function log(target, msg, kind = "") {
+  const el = document.getElementById(target);
+  const line = document.createElement("div");
+  if (kind) line.className = "log__line--" + kind;
+  const t = new Date().toISOString().slice(11, 23);
+  line.textContent = `[${t}] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+}
+function facts(target, rows) {
+  document.getElementById(target).innerHTML = rows.map(([k, v, cls]) =>
+    `<tr><td>${k}</td><td${cls ? ` class="verdict--${cls}"` : ""}>${v}</td></tr>`).join("");
+}
+
+// ── 1 · Umgebung ───────────────────────────────────────────
+const ua = navigator.userAgent;
+const isApple  = /Mac|iPhone|iPad|iPod/.test(ua);
+const isIOS    = /iPhone|iPad|iPod/.test(ua) ||
+                 (/Mac/.test(ua) && navigator.maxTouchPoints > 1);
+const isSafari = /Safari/.test(ua) && !/Chrome|Chromium|Edg/.test(ua);
+const isTouch  = matchMedia("(pointer: coarse)").matches;
+
+facts("env", [
+  ["User Agent", ua],
+  ["Plattform", navigator.platform || "—"],
+  ["maxTouchPoints", navigator.maxTouchPoints],
+  ["Touch-Gerät", isTouch ? "ja (pointer: coarse)" : "nein — Desktop/Maus", isTouch ? "ok" : "warn"],
+  ["Protokoll", location.protocol,
+    location.protocol === "file:" ? "warn" : "ok"],
+  ["isSecureContext", String(window.isSecureContext),
+    window.isSecureContext ? "ok" : "warn"],
+  ["Sichtbarkeit", document.visibilityState],
+  ["Sprache", navigator.language],
+]);
+
+// ── 2 · Vibration ──────────────────────────────────────────
+const hasVibrate = typeof navigator.vibrate === "function";
+
+let vibVerdict, vibClass;
+if (!hasVibrate) {
+  vibVerdict = "API FEHLT — dieser Browser kennt navigator.vibrate nicht. " +
+               (isSafari || isIOS ? "Safari und iOS unterstützen sie in keiner Version."
+                                  : "Vibration ist hier unmöglich.");
+  vibClass = "bad";
+} else if (!isTouch) {
+  vibVerdict = "API vorhanden, aber kein Touch-Gerät — ein Desktop-Rechner hat keinen " +
+               "Vibrationsmotor. Aufrufe melden true und tun nichts. Hier NICHT testbar.";
+  vibClass = "warn";
+} else if (isIOS) {
+  vibVerdict = "iOS erkannt — die Vibration API existiert hier nicht bzw. bleibt wirkungslos. " +
+               "Für einen echten Test wird ein Android-Gerät benötigt.";
+  vibClass = "bad";
+} else {
+  vibVerdict = "API vorhanden und Touch-Gerät — hier sollte echte Vibration möglich sein.";
+  vibClass = "ok";
+}
+
+facts("vib-facts", [
+  ["navigator.vibrate", hasVibrate ? "vorhanden" : "FEHLT", hasVibrate ? "ok" : "bad"],
+  ["Permission nötig?", "nein — die API kennt kein Prompt"],
+  ["Bewertung", vibVerdict, vibClass],
+]);
+log("vib-log", vibVerdict, vibClass);
+
+function tryVibrate(pattern, label) {
+  if (!hasVibrate) {
+    log("vib-log", `${label}: übersprungen — navigator.vibrate fehlt`, "bad");
+    return;
+  }
+  const act = navigator.userActivation;
+  const activation = act ? `isActive=${act.isActive} hasBeenActive=${act.hasBeenActive}` : "n/a";
+  let result;
+  try {
+    result = navigator.vibrate(pattern);
+  } catch (e) {
+    log("vib-log", `${label}: EXCEPTION ${e.name}: ${e.message}`, "bad");
+    return;
+  }
+  log("vib-log", `${label}: vibrate(${JSON.stringify(pattern)}) -> ${result}   [${activation}]`,
+      result === false ? "bad" : "ok");
+  if (result && !isTouch) {
+    log("vib-log", "   ...aber true heißt hier nur 'angenommen'. Ohne Motor passiert nichts.", "dim");
+  }
+}
+
+document.querySelectorAll("[data-vib]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const raw = btn.dataset.vib;
+    const pattern = raw.includes(",") ? raw.split(",").map(Number) : Number(raw);
+    tryVibrate(pattern, btn.textContent.trim());
+  });
+});
+
+// Replicates the game's rumble: a 220ms buzz re-issued every 200ms
+document.getElementById("vib-rumble").addEventListener("click", () => {
+  if (!hasVibrate) { log("vib-log", "Rumpeln: übersprungen — API fehlt", "bad"); return; }
+  log("vib-log", "Rumpeln: starte 3 s, 220 ms Impuls alle 200 ms (wie setThrustHaptics)", "in");
+  let n = 0;
+  const id = setInterval(() => {
+    const r = navigator.vibrate(220);
+    n++;
+    if (n === 1 || n % 5 === 0) log("vib-log", `   Impuls ${n} -> ${r}`, "dim");
+    if (n >= 15) {
+      clearInterval(id);
+      navigator.vibrate(0);
+      log("vib-log", `Rumpeln beendet nach ${n} Impulsen, vibrate(0) gesendet`, "ok");
+    }
+  }, 200);
+});
+
+// ── 3 · Sprachausgabe ──────────────────────────────────────
+const hasTTS = "speechSynthesis" in window &&
+               typeof window.SpeechSynthesisUtterance === "function";
+let voices = [];
+
+function refreshVoices(quiet) {
+  if (!hasTTS) return;
+  voices = window.speechSynthesis.getVoices() || [];
+  const sel = document.getElementById("tts-voice");
+  sel.innerHTML = voices.length
+    ? voices.map((v, i) =>
+        `<option value="${i}">${v.name} — ${v.lang}${v.default ? " (default)" : ""}${v.localService ? "" : " [remote]"}</option>`
+      ).join("")
+    : "<option value=\"-1\">— keine Stimmen gemeldet —</option>";
+  // preselect an English voice, matching the game
+  const en = voices.findIndex(v => /^en/i.test(v.lang));
+  if (en >= 0) sel.value = String(en);
+  updateTtsFacts();
+  if (!quiet) log("tts-log", `Stimmen neu geladen: ${voices.length}`, voices.length ? "ok" : "warn");
+}
+
+function updateTtsFacts() {
+  const s = hasTTS ? window.speechSynthesis : null;
+  facts("tts-facts", [
+    ["speechSynthesis", hasTTS ? "vorhanden" : "FEHLT", hasTTS ? "ok" : "bad"],
+    ["Stimmen geladen", hasTTS ? voices.length : "—",
+      hasTTS ? (voices.length ? "ok" : "warn") : "bad"],
+    ["speaking / pending / paused",
+      s ? `${s.speaking} / ${s.pending} / ${s.paused}` : "—"],
+    ["Permission nötig?", "nein — die API kennt kein Prompt"],
+    ["Hinweis", voices.length === 0 && hasTTS
+      ? "Leere Liste ist direkt nach dem Laden normal — voiceschanged abwarten oder neu laden."
+      : "Wenn A funktioniert und B nicht, ist cancel()+speak() der Auslöser.",
+      voices.length === 0 && hasTTS ? "warn" : ""],
+  ]);
+}
+
+if (hasTTS) {
+  refreshVoices(true);
+  window.speechSynthesis.addEventListener("voiceschanged", () => {
+    log("tts-log", "Event: voiceschanged", "dim");
+    refreshVoices(true);
+  });
+  log("tts-log", "speechSynthesis vorhanden. Buttons A–D vergleichen vier Aufrufmuster.", "ok");
+} else {
+  log("tts-log", "speechSynthesis FEHLT — Sprachausgabe ist in diesem Browser unmöglich.", "bad");
+  updateTtsFacts();
+}
+
+["pitch", "rate", "volume"].forEach(k => {
+  const input = document.getElementById("tts-" + k);
+  input.addEventListener("input", () => {
+    document.getElementById(`tts-${k}-val`).textContent = input.value;
+  });
+});
+
+function buildUtterance(useSliders) {
+  const u = new SpeechSynthesisUtterance("Hey! Taxi!");
+  if (useSliders) {
+    u.pitch  = parseFloat(document.getElementById("tts-pitch").value);
+    u.rate   = parseFloat(document.getElementById("tts-rate").value);
+    u.volume = parseFloat(document.getElementById("tts-volume").value);
+    const idx = parseInt(document.getElementById("tts-voice").value, 10);
+    if (idx >= 0 && voices[idx]) u.voice = voices[idx];
+  }
+  const started = { at: 0 };
+  u.onstart    = () => { started.at = performance.now(); log("tts-log", "   -> onstart", "ok"); };
+  u.onend      = () => log("tts-log", `   -> onend (${started.at ? Math.round(performance.now() - started.at) + " ms" : "nie gestartet"})`,
+                            started.at ? "ok" : "bad");
+  u.onerror    = e => log("tts-log", `   -> onerror: ${e.error || "unbekannt"}`, "bad");
+  u.onpause    = () => log("tts-log", "   -> onpause", "warn");
+  u.onboundary = e => log("tts-log", `   -> onboundary @${e.charIndex}`, "dim");
+  // The game's 400ms silence watchdog
+  setTimeout(() => {
+    if (!started.at) log("tts-log", "   -> WATCHDOG: nach 400 ms kein onstart — Fallback würde greifen", "bad");
+  }, 400);
+  return u;
+}
+
+function describeCall(label) {
+  const act = navigator.userActivation;
+  log("tts-log", `${label}  [userActivation: ${act ? act.isActive : "n/a"}]`, "in");
+}
+
+document.getElementById("tts-plain").addEventListener("click", () => {
+  if (!hasTTS) return;
+  describeCall("A · speak() ohne vorheriges cancel()");
+  window.speechSynthesis.speak(buildUtterance(true));
+});
+
+document.getElementById("tts-cancel-first").addEventListener("click", () => {
+  if (!hasTTS) return;
+  describeCall("B · cancel() unmittelbar gefolgt von speak() — exakt wie index.html");
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(buildUtterance(true));
+});
+
+document.getElementById("tts-delayed").addEventListener("click", () => {
+  if (!hasTTS) return;
+  describeCall("C · cancel(), 100 ms Pause, dann speak()");
+  window.speechSynthesis.cancel();
+  setTimeout(() => window.speechSynthesis.speak(buildUtterance(true)), 100);
+});
+
+document.getElementById("tts-default").addEventListener("click", () => {
+  if (!hasTTS) return;
+  describeCall("D · Werkseinstellungen, keine Stimmenwahl, pitch/rate = 1");
+  window.speechSynthesis.speak(buildUtterance(false));
+});
+
+// E — the decisive iOS test: speak from a timer, with no user gesture in scope
+document.getElementById("tts-timer").addEventListener("click", () => {
+  if (!hasTTS) return;
+  describeCall("E · Tap jetzt, speak() erst in 1 s aus dem Timer (kein Gesture mehr aktiv)");
+  log("tts-log", "   warte 1 s ...", "dim");
+  setTimeout(() => {
+    const act = navigator.userActivation;
+    log("tts-log", `   speak() jetzt  [userActivation.isActive: ${act ? act.isActive : "n/a"}]`, "in");
+    window.speechSynthesis.speak(buildUtterance(true));
+  }, 1000);
+});
+
+// F — prime inside the gesture with a silent utterance, then speak from a timer.
+// This is the candidate fix for index.html.
+document.getElementById("tts-primed").addEventListener("click", () => {
+  if (!hasTTS) return;
+  describeCall("F · Priming: stumme Utterance JETZT im Tap, echte Ausgabe in 1 s");
+  try {
+    const primer = new SpeechSynthesisUtterance(" ");
+    primer.volume = 0;
+    primer.onstart = () => log("tts-log", "   Primer: onstart", "ok");
+    primer.onerror = e => log("tts-log", `   Primer: onerror ${e.error || "?"}`, "warn");
+    window.speechSynthesis.speak(primer);
+    log("tts-log", "   Primer abgeschickt (volume 0)", "dim");
+  } catch (e) {
+    log("tts-log", `   Primer EXCEPTION: ${e.message}`, "bad");
+  }
+  setTimeout(() => {
+    const act = navigator.userActivation;
+    log("tts-log", `   echte Utterance jetzt  [isActive: ${act ? act.isActive : "n/a"}]`, "in");
+    window.speechSynthesis.speak(buildUtterance(true));
+  }, 1000);
+});
+
+// Comparison beep: proves whether the WebAudio channel is audible at all, which
+// separates "page is muted / silent switch" from "TTS specifically fails".
+let cmpCtx = null;
+document.getElementById("tts-beep").addEventListener("click", () => {
+  try {
+    if (!cmpCtx) cmpCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (cmpCtx.state === "suspended") cmpCtx.resume();
+    const osc = cmpCtx.createOscillator();
+    const g = cmpCtx.createGain();
+    osc.type = "square";
+    osc.frequency.value = 880;
+    g.gain.value = 0.1;
+    g.gain.exponentialRampToValueAtTime(0.001, cmpCtx.currentTime + 0.3);
+    osc.connect(g).connect(cmpCtx.destination);
+    osc.start(); osc.stop(cmpCtx.currentTime + 0.3);
+    log("tts-log", `Beep gesendet — AudioContext.state = ${cmpCtx.state}`,
+        cmpCtx.state === "running" ? "ok" : "warn");
+    log("tts-log", "   Hörst du den Beep, aber keine Stimme? Dann liegt es an TTS, nicht am Ton.", "dim");
+    log("tts-log", "   Hörst du gar nichts? Prüfe den Stummschalter am iPhone und die Lautstärke.", "dim");
+  } catch (e) {
+    log("tts-log", `Beep EXCEPTION: ${e.message}`, "bad");
+  }
+});
+
+document.getElementById("tts-stop").addEventListener("click", () => {
+  if (!hasTTS) return;
+  window.speechSynthesis.cancel();
+  log("tts-log", "cancel() gesendet", "dim");
+  updateTtsFacts();
+});
+
+document.getElementById("tts-reload-voices").addEventListener("click", () => refreshVoices(false));
+
+if (hasTTS) setInterval(updateTtsFacts, 1000);
+
+// ── 2b · iOS haptic switch side effect ─────────────────────
+const hapticSwitch = document.getElementById("haptic-switch");
+const switchSupported = "switch" in document.createElement("input");
+log("haptic-log",
+    switchSupported
+      ? "Das switch-Attribut wird unterstützt (Safari 17.4+). Schalter mehrfach umlegen."
+      : "Das switch-Attribut wird NICHT unterstützt — dieser Weg entfällt.",
+    switchSupported ? "ok" : "bad");
+let switchToggles = 0;
+hapticSwitch.addEventListener("change", () => {
+  switchToggles++;
+  log("haptic-log", `Umgelegt (${switchToggles}x) -> ${hapticSwitch.checked ? "an" : "aus"}. Etwas gespürt?`, "in");
+});
+
+// ── 4 · Befund ─────────────────────────────────────────────
+function buildReport() {
+  const s = hasTTS ? window.speechSynthesis : null;
+  return [
+    "=== Space Taxi — Diagnose Sprachausgabe & Vibration ===",
+    `Zeit:            ${new Date().toISOString()}`,
+    `User Agent:      ${ua}`,
+    `Plattform:       ${navigator.platform || "—"}`,
+    `maxTouchPoints:  ${navigator.maxTouchPoints}`,
+    `pointer:coarse:  ${isTouch}`,
+    `Protokoll:       ${location.protocol}`,
+    `SecureContext:   ${window.isSecureContext}`,
+    "",
+    "--- Vibration ---",
+    `navigator.vibrate vorhanden: ${hasVibrate}`,
+    `switch-Attribut (iOS-Haptik): ${switchSupported}`,
+    `Schalter umgelegt: ${switchToggles}x`,
+    `Bewertung: ${vibVerdict}`,
+    "",
+    "--- Sprachausgabe ---",
+    `speechSynthesis vorhanden: ${hasTTS}`,
+    `Stimmen: ${voices.length}`,
+    voices.length ? voices.map(v => `  - ${v.name} [${v.lang}]${v.default ? " default" : ""}${v.localService ? " local" : " remote"}`).join("\n") : "  (keine)",
+    s ? `Status: speaking=${s.speaking} pending=${s.pending} paused=${s.paused}` : "",
+    "",
+    "--- Vibrations-Log ---",
+    document.getElementById("vib-log").innerText || "(leer)",
+    "",
+    "--- Sprach-Log ---",
+    document.getElementById("tts-log").innerText || "(leer)",
+  ].join("\n");
+}
+
+document.getElementById("copy-report").addEventListener("click", async () => {
+  const text = buildReport();
+  document.getElementById("report-log").textContent = text;
+  try {
+    await navigator.clipboard.writeText(text);
+    log("report-log", "\n[in die Zwischenablage kopiert]", "ok");
+  } catch (e) {
+    // clipboard is blocked on file:// in several browsers - the text is shown above anyway
+    const el = document.getElementById("report-log");
+    el.textContent = text + "\n\n[Zwischenablage nicht verfügbar - Text oben manuell markieren]";
+  }
+});
+
+document.getElementById("clear-logs").addEventListener("click", () => {
+  ["vib-log", "tts-log", "report-log"].forEach(id => document.getElementById(id).textContent = "");
+});
+</script>
+</body>
+</html>

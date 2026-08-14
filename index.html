@@ -1,0 +1,1718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Space Taxi - C64 Classic</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    overscroll-behavior: none;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    background: #40318d;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    min-height: 100dvh;
+    font-family: 'Press Start 2P', monospace;
+    overflow: hidden;
+  }
+
+  #game-wrapper {
+    border: 4px solid #7869c4;
+    border-radius: 4px;
+    box-shadow: 0 0 30px rgba(120, 105, 196, 0.5);
+    position: relative;
+  }
+
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+
+  #instructions {
+    color: #7869c4;
+    font-size: 9px;
+    margin-top: 10px;
+    text-align: center;
+    line-height: 1.8;
+  }
+
+  /* ── Touch-Modus: randlos, Vollbild ───────────────────────── */
+
+  .is-touch body { background: #000; }
+
+  .is-touch #game-wrapper {
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .is-touch #instructions { display: none; }
+
+  /* ── Touch-Steuerung ──────────────────────────────────────── */
+
+  .touch-controls {
+    display: none;
+  }
+
+  .is-touch .touch-controls {
+    display: block;
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  .touch-controls__cluster {
+    position: absolute;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+    display: flex;
+    gap: 14px;
+  }
+
+  .touch-controls__cluster--left {
+    left: calc(env(safe-area-inset-left, 0px) + 14px);
+  }
+
+  .touch-controls__cluster--right {
+    right: calc(env(safe-area-inset-right, 0px) + 14px);
+  }
+
+  .touch-controls__btn {
+    width: 68px;
+    height: 68px;
+    border: 2px solid #7cc6fe;
+    border-radius: 10px;
+    background: rgba(53, 40, 121, 0.55);
+    color: #7cc6fe;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 26px;
+    line-height: 1;
+    opacity: 0.45;
+    pointer-events: auto;
+    touch-action: none;
+    transition: opacity 80ms linear, transform 80ms linear;
+  }
+
+  .touch-controls__btn--active {
+    opacity: 0.9;
+    background: rgba(120, 105, 196, 0.8);
+    transform: scale(0.94);
+  }
+
+  /* ── Vollbild-Umschalter ──────────────────────────────────── */
+
+  .fullscreen-btn {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 10px);
+    right: calc(env(safe-area-inset-right, 0px) + 10px);
+    width: 44px;
+    height: 44px;
+    border: 2px solid #7869c4;
+    border-radius: 8px;
+    background: rgba(53, 40, 121, 0.55);
+    color: #7cc6fe;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 18px;
+    opacity: 0.4;
+    pointer-events: auto;
+    touch-action: manipulation;
+    z-index: 11;
+  }
+
+  /* ── Hochformat-Sperre ────────────────────────────────────── */
+
+  .rotate-gate {
+    display: none;
+  }
+
+  @media (orientation: portrait) {
+    .is-touch .rotate-gate {
+      display: flex;
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      background: #000;
+      text-align: center;
+      padding: 24px;
+    }
+
+    .is-touch #game-wrapper,
+    .is-touch .touch-controls,
+    .is-touch .fullscreen-btn { visibility: hidden; }
+  }
+
+  .rotate-gate__icon {
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 56px;
+    animation: rotate-gate-tilt 1.8s ease-in-out infinite;
+  }
+
+  .rotate-gate__text {
+    color: #7cc6fe;
+    font-size: 11px;
+    line-height: 2;
+  }
+
+  @keyframes rotate-gate-tilt {
+    0%, 45%   { transform: rotate(0deg); }
+    70%, 100% { transform: rotate(-90deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .rotate-gate__icon { animation: none; }
+    .touch-controls__btn { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="game-wrapper">
+  <canvas id="game" width="800" height="500"></canvas>
+</div>
+<div id="instructions">
+  ARROW KEYS: THRUST &amp; STEER &nbsp;|&nbsp; SPACE: START/CONTINUE<br>
+  LAND <em>BESIDE</em> THE PASSENGER &mdash; GEAR MUST BE FULLY DOWN<br>
+  NEVER REFUEL WHILE CARRYING A FARE
+</div>
+
+<div class="touch-controls" id="touch-controls">
+  <div class="touch-controls__cluster touch-controls__cluster--left">
+    <button type="button" class="touch-controls__btn touch-controls__btn--left"  data-input="left"  aria-label="Steer left">&#9664;</button>
+    <button type="button" class="touch-controls__btn touch-controls__btn--right" data-input="right" aria-label="Steer right">&#9654;</button>
+  </div>
+  <div class="touch-controls__cluster touch-controls__cluster--right">
+    <button type="button" class="touch-controls__btn touch-controls__btn--thrust" data-input="up" aria-label="Thrust">&#9650;</button>
+  </div>
+</div>
+
+<button type="button" class="fullscreen-btn" id="fullscreen-btn" aria-label="Toggle fullscreen" hidden>&#9974;</button>
+
+<div class="rotate-gate">
+  <div class="rotate-gate__icon">&#128241;</div>
+  <p class="rotate-gate__text">PLEASE ROTATE<br>YOUR DEVICE</p>
+</div>
+
+<script>
+// ============================================================
+//  SPACE TAXI — Web Remake of the 1984 Commodore 64 Classic
+// ============================================================
+(() => {
+"use strict";
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+// World coordinates are FIXED. The canvas backing store is resized to the
+// device's real pixel resolution, but every level coordinate, HUD position and
+// physics constant keeps addressing this 800x500 space via the ctx transform.
+const W = 800;
+const H = 500;
+
+const isTouchDevice = window.matchMedia("(pointer: coarse)").matches;
+document.documentElement.classList.toggle("is-touch", isTouchDevice);
+
+// ── Retro C64-ish palette ───────────────────────────────────
+const C = {
+  black:      "#000000",
+  white:      "#ffffff",
+  red:        "#68372b",
+  cyan:       "#70a4b2",
+  purple:     "#6f3d86",
+  green:      "#588d43",
+  blue:       "#352879",
+  yellow:     "#b8c76f",
+  orange:     "#6f4f25",
+  brown:      "#433900",
+  lightRed:   "#9a6759",
+  darkGrey:   "#444444",
+  grey:       "#6c6c6c",
+  lightGreen: "#9ad284",
+  lightBlue:  "#6c5eb5",
+  lightGrey:  "#959595",
+  skyBlue:    "#7cc6fe",
+  hotYellow:  "#ffff55",
+  hotOrange:  "#ff8844",
+  padGreen:   "#55ff55",
+};
+
+// ── Audio (simple beep synth) ───────────────────────────────
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+function beep(freq, dur, type = "square", vol = 0.08) {
+  try {
+    ensureAudio();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.value = vol;
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + dur);
+  } catch(e) {}
+}
+function sndPickup()  { beep(880,.1); setTimeout(()=>beep(1100,.1),100); setTimeout(()=>beep(1320,.15),200); }
+function sndDropoff() { beep(1320,.1); setTimeout(()=>beep(1100,.1),80); setTimeout(()=>beep(880,.1),160); setTimeout(()=>beep(1320,.2),260); }
+function sndCrash()   { for(let i=0;i<6;i++) setTimeout(()=>beep(200-i*25,.12,"sawtooth",0.12),i*60); }
+function sndLevelUp() { [0,100,200,300,400].forEach((d,i)=>setTimeout(()=>beep(440+i*110,.15,"triangle",0.1),d)); }
+
+// Sad trombone: three descending notes, then one that sags away
+function sndSad() {
+  [[392,0.18],[349,0.18],[294,0.22]].forEach(([f,d],i) =>
+    setTimeout(() => beep(f, d, "triangle", 0.09), i * 170));
+  setTimeout(() => {
+    try {
+      ensureAudio();
+      const t = audioCtx.currentTime;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(262, t);
+      osc.frequency.exponentialRampToValueAtTime(150, t + 0.7);   // the droop
+      gain.gain.setValueAtTime(0.1, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.75);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(); osc.stop(t + 0.75);
+    } catch (e) {}
+  }, 510);
+}
+function sndFuelWarn() {
+  beep(300,.1,"square",0.06);
+  setTimeout(()=>beep(300,.1,"square",0.06),200);
+  vibrate([30, 70, 30]);
+}
+
+// ── Rocket engine (continuous filtered noise) ───────────────
+// One looping noise source split into a low rumble and a high hiss; thrust
+// fades their gains in and out. Replaces the old re-triggered sawtooth blip,
+// which read as a click train rather than an engine.
+let engine = null;
+let engineState = { low: -1, hi: -1, cut: -1 };
+
+function ensureEngine() {
+  if (engine || !audioCtx) return;
+  try {
+    const len = Math.floor(audioCtx.sampleRate * 2);
+    const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+
+    const low = audioCtx.createBiquadFilter();
+    low.type = "lowpass"; low.frequency.value = 200; low.Q.value = 3;
+    const hi = audioCtx.createBiquadFilter();
+    hi.type = "highpass"; hi.frequency.value = 2400;
+
+    const lowGain = audioCtx.createGain(); lowGain.gain.value = 0;
+    const hiGain  = audioCtx.createGain(); hiGain.gain.value  = 0;
+
+    src.connect(low).connect(lowGain).connect(audioCtx.destination);
+    src.connect(hi).connect(hiGain).connect(audioCtx.destination);
+    src.start();
+    engine = { src, low, lowGain, hiGain };
+  } catch (e) { engine = null; }
+}
+
+// main = upward thrust, side = lateral thruster. Side jets are quieter and
+// brighter so the two are distinguishable by ear.
+function setThrustSound(main, side) {
+  if (!audioCtx) return;          // wait for the first gesture
+  ensureEngine();
+  if (!engine) return;
+  const lowTarget = main ? 0.20 : (side ? 0.06 : 0);
+  const hiTarget  = main ? 0.05 : (side ? 0.04 : 0);
+  const cutTarget = main ? 200  : 340;
+  if (lowTarget === engineState.low && hiTarget === engineState.hi && cutTarget === engineState.cut) return;
+  engineState = { low: lowTarget, hi: hiTarget, cut: cutTarget };
+  try {
+    const t = audioCtx.currentTime;
+    engine.lowGain.gain.setTargetAtTime(lowTarget, t, 0.04);
+    engine.hiGain.gain.setTargetAtTime(hiTarget, t, 0.04);
+    engine.low.frequency.setTargetAtTime(cutTarget, t, 0.06);
+  } catch (e) {}
+}
+
+// ── "HEY TAXI!" speech ──────────────────────────────────────
+// speechSynthesis output CANNOT be routed through the AudioContext in any
+// browser, so it cannot be bit-crushed. Only pitch/rate/voice are adjustable.
+// The retro character therefore comes from a low pitch plus a separate crackle
+// layer played underneath. Swap speakHeyTaxi() for heyTaxiBeeps() if the system
+// voice sounds too clean.
+let ttsVoices = [];
+function refreshVoices() {
+  try { ttsVoices = window.speechSynthesis.getVoices() || []; } catch (e) { ttsVoices = []; }
+}
+if ("speechSynthesis" in window) {
+  refreshVoices();
+  window.speechSynthesis.addEventListener("voiceschanged", refreshVoices);
+}
+
+// Gritty noise + gated tone under the voice, standing in for sample degradation
+function heyTaxiCrackle() {
+  if (!audioCtx || !engine) return;
+  try {
+    const t = audioCtx.currentTime;
+    const src = audioCtx.createBufferSource();
+    src.buffer = engine.src.buffer;
+    src.loop = true;
+    const band = audioCtx.createBiquadFilter();
+    band.type = "bandpass"; band.frequency.value = 1400; band.Q.value = 0.8;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    // stutter the gain in steps so it reads as a chopped-up sample
+    for (let i = 0; i < 10; i++) {
+      g.gain.setValueAtTime(i % 2 ? 0.035 : 0.008, t + i * 0.045);
+    }
+    g.gain.setValueAtTime(0.0001, t + 0.46);
+    src.connect(band).connect(g).connect(audioCtx.destination);
+    src.start(t); src.stop(t + 0.5);
+  } catch (e) {}
+}
+
+function heyTaxiBeeps() { beep(600,.08); setTimeout(()=>beep(800,.12),100); }
+
+function speakHeyTaxi() {
+  if (!("speechSynthesis" in window)) return false;
+  try {
+    const u = new SpeechSynthesisUtterance("Hey! Taxi!");
+    u.pitch  = 0.3;    // range 0-2; as guttural as the API allows
+    u.rate   = 0.85;
+    u.volume = 0.9;
+    const voice = ttsVoices.find(v => /^en/i.test(v.lang)) || ttsVoices[0];
+    if (voice) u.voice = voice;
+    let spoke = false;
+    u.onstart = () => { spoke = true; };
+    u.onerror = () => { if (!spoke) heyTaxiBeeps(); };
+    window.speechSynthesis.cancel();   // never queue up a backlog of shouts
+    window.speechSynthesis.speak(u);
+    // Nothing started within 400ms means the voice never came - fall back
+    setTimeout(() => { if (!spoke) heyTaxiBeeps(); }, 400);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function sndHeyTaxi() {
+  ensureAudio();
+  ensureEngine();
+  heyTaxiCrackle();
+  if (!speakHeyTaxi()) heyTaxiBeeps();
+  vibrate([25, 50, 25]);
+}
+
+// ── Platform (audio unlock, fullscreen, haptics) ────────────
+function unlockAudio() {
+  try {
+    ensureAudio();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch (e) {}
+}
+function setAudioSuspended(suspend) {
+  if (!audioCtx) return;
+  try { suspend ? audioCtx.suspend() : audioCtx.resume(); } catch (e) {}
+}
+function vibrate(pattern) {
+  if (!navigator.vibrate) return;
+  try { navigator.vibrate(pattern); } catch (e) {}
+}
+
+// Continuous thrust rumble. navigator.vibrate has no sustained mode, so a
+// 220ms buzz is re-issued every 200ms to overlap into a steady rumble.
+// Android only — iOS ignores the Vibration API entirely — and it does cost
+// battery. RUMBLE_STEPS is 12 simulation steps = 200ms at the fixed timestep.
+const RUMBLE_STEPS = 12;
+let rumbleTick = 0;
+let rumbling = false;
+
+function setThrustHaptics(active) {
+  if (!navigator.vibrate) return;
+  if (active) {
+    if (rumbleTick <= 0) { vibrate(220); rumbleTick = RUMBLE_STEPS; }
+    rumbleTick--;
+    rumbling = true;
+  } else if (rumbling) {
+    stopRumble();
+  }
+}
+
+function stopRumble() {
+  rumbling = false;
+  rumbleTick = 0;
+  if (!navigator.vibrate) return;
+  try { navigator.vibrate(0); } catch (e) {}
+}
+
+const fullscreenBtn = document.getElementById("fullscreen-btn");
+// iOS Safari has no element fullscreen — only show the button where it works.
+if (isTouchDevice && document.documentElement.requestFullscreen) {
+  fullscreenBtn.hidden = false;
+  fullscreenBtn.addEventListener("click", () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else document.documentElement.requestFullscreen().catch(() => {});
+  });
+}
+
+// ── Viewport (scaling, orientation gate, pause) ─────────────
+// Never let the backing store grow past roughly 4K worth of pixels. On a large
+// retina desktop, full-window * DPR 2-3 would otherwise mean a buffer the game
+// clears in full every frame for no visible gain.
+const MAX_BACKING_PIXELS = 3840 * 2160;
+
+function layoutCanvas() {
+  let availW, availH;
+  if (isTouchDevice) {
+    availW = window.innerWidth;
+    availH = window.innerHeight;
+  } else {
+    // Measure the surrounding chrome rather than guessing at it: the
+    // instruction block wraps to a different number of lines as the window
+    // narrows. Its height does not depend on the canvas, so there is no loop.
+    const instr = document.getElementById("instructions");
+    const instrH = (instr && instr.offsetHeight) || 0;
+    const border = 8;                        // 4px frame on each side
+    availW = window.innerWidth  - border - 16;
+    availH = window.innerHeight - border - instrH - 26;
+  }
+
+  // Uniform scale keeps the 8:5 world undistorted, so the tighter axis wins.
+  // On a 16:9 monitor that is the height, which leaves side margins - the world
+  // is a fixed 800x500 and cannot be widened without moving every level pad.
+  const scale = Math.max(0.1, Math.min(availW / W, availH / H));
+  const cssW = Math.floor(W * scale);
+  const cssH = Math.floor(H * scale);
+
+  let dpr = window.devicePixelRatio || 1;
+  const budget = Math.sqrt(MAX_BACKING_PIXELS / Math.max(1, cssW * cssH));
+  if (dpr > budget) dpr = Math.max(1, budget);
+
+  canvas.style.width  = cssW + "px";
+  canvas.style.height = cssH + "px";
+  canvas.width  = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+
+  // Resizing the backing store resets all context state, so re-apply it here.
+  ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+}
+
+let layoutQueued = false;
+function queueLayout() {
+  if (layoutQueued) return;
+  layoutQueued = true;
+  requestAnimationFrame(() => { layoutQueued = false; layoutCanvas(); });
+}
+window.addEventListener("resize", queueLayout);
+window.addEventListener("orientationchange", queueLayout);
+if (window.visualViewport) window.visualViewport.addEventListener("resize", queueLayout);
+
+const portraitQuery = window.matchMedia("(orientation: portrait)");
+let paused = false;
+let windowBlurred = false;
+
+function shouldPause() {
+  return document.hidden || windowBlurred || (isTouchDevice && portraitQuery.matches);
+}
+
+// ── Input ───────────────────────────────────────────────────
+// Keyboard and touch are tracked separately and merged per simulation step, so
+// neither source can clear a hold owned by the other.
+const kbHeld    = { up: false, left: false, right: false };
+const touchHeld = { up: false, left: false, right: false };
+const input     = { up: false, left: false, right: false, action: false };
+
+const GAME_KEYS = {
+  ArrowUp: "up", ArrowLeft: "left", ArrowRight: "right", Space: "action",
+};
+
+window.addEventListener("keydown", e => {
+  const slot = GAME_KEYS[e.code];
+  if (!slot) return;          // don't swallow F5, Cmd+R, Tab, devtools shortcuts
+  e.preventDefault();
+  unlockAudio();
+  if (slot === "action") input.action = true;
+  else kbHeld[slot] = true;
+});
+
+window.addEventListener("keyup", e => {
+  const slot = GAME_KEYS[e.code];
+  if (!slot || slot === "action") return;
+  e.preventDefault();
+  kbHeld[slot] = false;
+});
+
+const touchButtons = Array.from(document.querySelectorAll(".touch-controls__btn"));
+const activePointers = new Map();   // pointerId -> button element (or null)
+
+function buttonAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  return el && el.closest ? el.closest(".touch-controls__btn") : null;
+}
+
+function syncTouchState() {
+  const held = new Set(activePointers.values());
+  touchHeld.up = touchHeld.left = touchHeld.right = false;
+  for (const btn of held) {
+    if (btn) touchHeld[btn.dataset.input] = true;
+  }
+  for (const btn of touchButtons) {
+    btn.classList.toggle("touch-controls__btn--active", held.has(btn));
+  }
+}
+
+document.addEventListener("pointerdown", e => {
+  unlockAudio();
+  const btn = buttonAt(e.clientX, e.clientY);
+  if (btn) {
+    e.preventDefault();
+    activePointers.set(e.pointerId, btn);
+    syncTouchState();
+  } else if (!e.target.closest || !e.target.closest(".fullscreen-btn")) {
+    input.action = true;      // tap/click anywhere else = start / continue
+  }
+}, { passive: false });
+
+// No setPointerCapture: re-resolving the element on every move is what lets a
+// thumb slide from the left button onto the right one without lifting.
+document.addEventListener("pointermove", e => {
+  if (!activePointers.has(e.pointerId)) return;
+  activePointers.set(e.pointerId, buttonAt(e.clientX, e.clientY));
+  syncTouchState();
+}, { passive: false });
+
+function releasePointer(e) {
+  if (!activePointers.delete(e.pointerId)) return;
+  syncTouchState();
+}
+document.addEventListener("pointerup", releasePointer);
+document.addEventListener("pointercancel", releasePointer);
+
+function resetInput() {
+  activePointers.clear();
+  kbHeld.up = kbHeld.left = kbHeld.right = false;
+  input.action = false;
+  syncTouchState();
+}
+
+function actionHint(verb) {
+  return (isTouchDevice ? "TAP TO " : "PRESS SPACE TO ") + verb;
+}
+
+// ── Game State ──────────────────────────────────────────────
+let state = "title";  // title | playing | crashed | levelComplete | gameOver | win
+let level = 0;
+let score = 0;
+let lives = 3;
+let taxi, passengers, pads, obstacles, particles, messages;
+let levelTimer;
+let totalPassengersDelivered;
+let crashReason = "CRASHED!";
+
+// ── Level Definitions ───────────────────────────────────────
+// Each pad: { x, y, w, label, color }
+// Pads are wide enough to hold a waiting passenger AND the taxi side by side.
+// `fares` is how many rides the level has; the actual start/destination pairs
+// are rolled randomly in initLevel().
+const LEVELS = [
+  { // Level 1 — "Easy City"
+    name: "EASY CITY",
+    gravity: 0.04,
+    pads: [
+      { x: 50,  y: 430, w: 130, label: "1", color: C.padGreen },
+      { x: 350, y: 350, w: 130, label: "2", color: C.hotYellow },
+      { x: 650, y: 430, w: 130, label: "3", color: C.cyan },
+    ],
+    fares: 2,
+    obstacles: [
+      { x: 250, y: 280, w: 20, h: 80 },
+      { x: 530, y: 320, w: 20, h: 60 },
+    ],
+    fuelStations: [{ x: 400, y: 200, w: 60 }],
+  },
+  { // Level 2 — "Skyscraper"
+    name: "SKYSCRAPER",
+    gravity: 0.05,
+    pads: [
+      { x: 20,  y: 450, w: 130, label: "A", color: C.padGreen },
+      { x: 200, y: 320, w: 130, label: "B", color: C.hotYellow },
+      { x: 440, y: 200, w: 130, label: "C", color: C.cyan },
+      { x: 665, y: 380, w: 130, label: "D", color: C.lightRed },
+    ],
+    fares: 3,
+    obstacles: [
+      { x: 140, y: 220, w: 15, h: 130 },
+      { x: 370, y: 100, w: 15, h: 150 },
+      { x: 580, y: 250, w: 15, h: 180 },
+      { x: 300, y: 400, w: 120, h: 12 },
+    ],
+    fuelStations: [{ x: 600, y: 130, w: 60 }],
+  },
+  { // Level 3 — "The Cavern"
+    name: "THE CAVERN",
+    gravity: 0.055,
+    pads: [
+      { x: 30,  y: 300, w: 120, label: "1", color: C.padGreen },
+      { x: 250, y: 440, w: 130, label: "2", color: C.hotYellow },
+      { x: 500, y: 300, w: 115, label: "3", color: C.cyan },
+      { x: 665, y: 440, w: 130, label: "4", color: C.lightRed },
+    ],
+    fares: 3,
+    obstacles: [
+      // Ceiling
+      { x: 0, y: 0, w: 800, h: 60 },
+      // Stalactites
+      { x: 180, y: 60, w: 18, h: 100 },
+      { x: 400, y: 60, w: 18, h: 130 },
+      { x: 620, y: 60, w: 18, h: 90 },
+      // Stalagmites
+      { x: 150, y: 400, w: 22, h: 80 },
+      { x: 430, y: 380, w: 22, h: 100 },
+    ],
+    fuelStations: [{ x: 340, y: 350, w: 60 }],
+  },
+  { // Level 4 — "Metroplex"
+    name: "METROPLEX",
+    gravity: 0.06,
+    pads: [
+      { x: 10,  y: 450, w: 130, label: "A", color: C.padGreen },
+      { x: 160, y: 280, w: 115, label: "B", color: C.hotYellow },
+      { x: 360, y: 150, w: 115, label: "C", color: C.cyan },
+      { x: 515, y: 320, w: 130, label: "D", color: C.lightRed },
+      { x: 665, y: 450, w: 130, label: "E", color: C.lightGreen },
+    ],
+    fares: 4,
+    obstacles: [
+      { x: 100, y: 180, w: 12, h: 150 },
+      { x: 280, y: 50,  w: 12, h: 160 },
+      { x: 480, y: 200, w: 12, h: 170 },
+      { x: 650, y: 100, w: 12, h: 200 },
+      { x: 200, y: 380, w: 100, h: 10 },
+      { x: 500, y: 430, w: 100, h: 10 },
+    ],
+    fuelStations: [{ x: 300, y: 80, w: 60 }],
+  },
+  { // Level 5 — "Space Station"
+    name: "SPACE STATION",
+    gravity: 0.035,
+    pads: [
+      { x: 12,  y: 240, w: 120, label: "1", color: C.padGreen },
+      { x: 200, y: 440, w: 130, label: "2", color: C.hotYellow },
+      { x: 400, y: 120, w: 120, label: "3", color: C.cyan },
+      { x: 600, y: 350, w: 130, label: "4", color: C.lightRed },
+      { x: 660, y: 180, w: 130, label: "5", color: C.lightGreen },
+    ],
+    fares: 4,
+    obstacles: [
+      { x: 0,   y: 0,   w: 800, h: 30 },
+      { x: 140, y: 130, w: 14, h: 120 },
+      { x: 320, y: 220, w: 14, h: 120 },
+      { x: 530, y: 100, w: 14, h: 140 },
+      { x: 300, y: 300, w: 140, h: 10 },
+      { x: 100, y: 380, w: 80,  h: 10 },
+      { x: 550, y: 250, w: 80,  h: 10 },
+    ],
+    fuelStations: [{ x: 450, y: 50, w: 60 }],
+  },
+];
+
+// ── Taxi Object ─────────────────────────────────────────────
+function createTaxi() {
+  return {
+    x: 100, y: 80,
+    vx: 0, vy: 0,
+    w: 32, h: 18,
+    fuel: 100,
+    maxFuel: 100,
+    landed: false,
+    landedPad: -1,
+    hasPassenger: false,
+    passengerDest: -1,
+    thrustUp: false,
+    thrustLeft: false,
+    thrustRight: false,
+    angle: 0,
+    gear: 0,          // 0 = retracted, 1 = fully deployed
+  };
+}
+
+// ── Landing gear ────────────────────────────────────────────
+const GEAR_LEN        = 5;    // how far the struts reach below the hull
+const GEAR_DEPLOY     = 1/20; // ~0.33s to extend
+const GEAR_RETRACT    = 1/45; // slower to fold back in
+const GEAR_ZONE_X     = 30;   // horizontal slack around a landing surface
+const GEAR_ZONE_Y     = 90;   // height above it at which the gear starts out
+
+function nearLandingSurface() {
+  const lvl = LEVELS[level];
+  const surfaces = pads.concat(lvl.fuelStations || []);
+  const bottom = taxi.y + taxi.h;
+  for (const s of surfaces) {
+    const overX = taxi.x + taxi.w > s.x - GEAR_ZONE_X && taxi.x < s.x + s.w + GEAR_ZONE_X;
+    const overY = bottom > s.y - GEAR_ZONE_Y && bottom <= s.y + 16;
+    if (overX && overY) return true;
+  }
+  return false;
+}
+
+// ── Particles ───────────────────────────────────────────────
+function spawnParticle(x, y, vx, vy, color, life) {
+  particles.push({ x, y, vx, vy, color, life, maxLife: life });
+}
+function spawnExplosion(x, y) {
+  for (let i = 0; i < 30; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = Math.random() * 3 + 1;
+    const c = [C.hotOrange, C.hotYellow, C.red, C.white][Math.floor(Math.random()*4)];
+    spawnParticle(x, y, Math.cos(a)*s, Math.sin(a)*s, c, 40 + Math.random()*30);
+  }
+}
+function spawnThrustParticles(x, y, dir) {
+  for (let i = 0; i < 2; i++) {
+    const c = [C.hotOrange, C.hotYellow, C.white][Math.floor(Math.random()*3)];
+    let vx = (Math.random()-0.5)*0.5;
+    let vy = (Math.random()-0.5)*0.5;
+    if (dir === "up")    vy = Math.random()*2+1;
+    if (dir === "left")  vx = Math.random()*2+1;
+    if (dir === "right") vx = -(Math.random()*2+1);
+    spawnParticle(x, y, vx, vy, c, 10+Math.random()*10);
+  }
+}
+
+// ── Messages (floating text) ────────────────────────────────
+function addMessage(text, x, y, color = C.hotYellow, duration = 90) {
+  messages.push({ text, x, y, color, life: duration, maxLife: duration });
+}
+
+// ── Seeded randomness for the simulation ────────────────────
+// Anything that changes the outcome of a run draws from rng(), never from
+// Math.random(). Particles, flames and stars deliberately keep Math.random():
+// they are drawn per rendered frame, so letting them consume seeded numbers
+// would make the sequence depend on the display refresh rate.
+//
+// One runSeed determines a whole game. Retries still get a fresh route, because
+// the draw counter advances on every initLevel() — the run stays reproducible
+// as a whole without freezing a level you are practising.
+let runSeed = 0;
+let rngState = 0;
+let initCount = 0;
+
+function rng() {                                   // mulberry32
+  rngState = (rngState + 0x6D2B79F5) | 0;
+  let t = Math.imul(rngState ^ (rngState >>> 15), 1 | rngState);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+function newRunSeed() {
+  runSeed = (Math.random() * 4294967296) >>> 0;
+  initCount = 0;
+}
+
+// ?seed=12345 replays an entire run - handy for practising and bug reports
+const forcedSeed = (() => {
+  try {
+    const raw = new URLSearchParams(location.search).get("seed");
+    if (raw === null) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? (n >>> 0) : null;
+  } catch (e) { return null; }
+})();
+
+// ── Route generation ────────────────────────────────────────
+// Independent random pairs: every fare rolls its own pickup and destination
+// pad, so the taxi regularly has to fly an empty leg to the next pickup.
+// A fresh route is rolled on every initLevel() — including after a crash.
+const PERSON_HALF_W = 8;   // half the sprite width, used for the crush box
+const PERSON_MARGIN = 16;  // keep the passenger clear of the pad edges
+const PERSON_WALK   = 0.8; // px per 1/60s step while boarding
+
+function randomFare(padCount) {
+  const from = Math.floor(rng() * padCount);
+  let to = Math.floor(rng() * (padCount - 1));
+  if (to >= from) to++;                    // never deliver to the pickup pad
+  return { padIndex: from, destPadIndex: to };
+}
+
+// The passenger stands in the left or right third of the pad, so the player has
+// to look before choosing a touchdown spot.
+//
+// Rolled at activation time, not at level start: with random routes a fare can
+// begin on the very pad the taxi is still parked on after the previous drop-off,
+// and spawning under the hull would be an unavoidable death.
+function passengerStandX(pad, avoidTaxi) {
+  const span = pad.w * 0.32;
+  const spots = [
+    pad.x + PERSON_MARGIN + rng() * span,
+    pad.x + pad.w - PERSON_MARGIN - rng() * span,
+  ];
+  if (!avoidTaxi) return spots[Math.floor(rng() * spots.length)];
+
+  const lo = taxi.x - PERSON_HALF_W - 2;
+  const hi = taxi.x + taxi.w + PERSON_HALF_W + 2;
+  const clear = spots.filter(x => x < lo || x > hi);
+  if (clear.length) return clear[Math.floor(rng() * clear.length)];
+
+  // Both rolls landed under the taxi — stand at the far edge of the deck
+  return taxi.x + taxi.w/2 - pad.x > pad.w/2
+    ? pad.x + PERSON_MARGIN
+    : pad.x + pad.w - PERSON_MARGIN;
+}
+
+// ── Init Level ──────────────────────────────────────────────
+function initLevel() {
+  // Advance the draw counter first: a retry of the same level gets a different
+  // route, yet the whole run replays identically from the same runSeed.
+  rngState = (runSeed + Math.imul(++initCount, 0x9E3779B9)) | 0;
+
+  const lvl = LEVELS[level];
+  taxi = createTaxi();
+  pads = lvl.pads.map(p => ({ ...p }));
+  passengers = Array.from({ length: lvl.fares }, (_, i) => {
+    const fare = randomFare(pads.length);
+    return {
+      ...fare,
+      // Only the first fare is placed now; the rest are placed on activation.
+      x: i === 0 ? passengerStandX(pads[fare.padIndex], false) : 0,
+      // waiting -> boarding (walking to the taxi) -> aboard -> delivered
+      phase: i === 0 ? "waiting" : "queued",
+      active: i === 0,
+      heyTimer: 0,
+      index: i,
+    };
+  });
+  obstacles = lvl.obstacles.map(o => ({ ...o }));
+  particles = [];
+  messages = [];
+  levelTimer = 0;
+  state = "playing";
+  addMessage(lvl.name, W/2, H/2 - 40, C.skyBlue, 120);
+}
+
+// ── Touchdown ───────────────────────────────────────────────
+// Pads and fuel stations are both flat surfaces the taxi can settle on, and
+// every rule below applies to both. Keeping one implementation is not about
+// line count: the gear gate, the resting height and the landing thump each had
+// to be written twice before, and a third divergence was only a matter of time.
+const MAX_LAND_VY  = 1.8;   // faster than this on touchdown is a wreck
+const MAX_LAND_VX  = 1.5;
+const PAD_SNAP     = 12;    // how far below the deck still counts as contact
+const FUEL_SNAP    = 14;    // fuel stations are a touch more forgiving
+
+// Returns "none" | "crash" | "land". On "crash" the caller must abort the step.
+function tryTouchdown(surface, snap, gearDrop, wasAirborne) {
+  const overX = taxi.x + taxi.w > surface.x + 4 && taxi.x < surface.x + surface.w - 4;
+  const feet  = taxi.y + taxi.h + gearDrop;
+  if (!overX || taxi.vy < 0 || feet < surface.y || feet > surface.y + snap) return "none";
+
+  if (taxi.gear < 1) { crash("GEAR NOT DOWN!"); return "crash"; }
+  if (taxi.vy > MAX_LAND_VY || Math.abs(taxi.vx) > MAX_LAND_VX) { crash(); return "crash"; }
+
+  if (wasAirborne) touchdownFeedback(taxi.vy);
+  taxi.y  = surface.y - taxi.h - GEAR_LEN;   // rest on the feet, not the hull
+  taxi.vx = 0;
+  taxi.vy = 0;
+  taxi.landed = true;
+  return "land";
+}
+
+// ── Touchdown feedback ──────────────────────────────────────
+// Impact speed drives both the thump and the buzz. The crash threshold is
+// vy > 1.8, so anything above ~1.0 is a firm arrival worth feeling.
+function touchdownFeedback(impactVy) {
+  const hard = impactVy > 1.0;
+  beep(hard ? 90 : 150, hard ? 0.09 : 0.05, "square", hard ? 0.09 : 0.04);
+  vibrate(hard ? [55] : [18]);
+}
+
+// ── Collision helpers ───────────────────────────────────────
+function rectOverlap(a, b) {
+  return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+}
+
+// ── Update ──────────────────────────────────────────────────
+function update() {
+  if (state !== "playing") return;
+  const lvl = LEVELS[level];
+  levelTimer++;
+
+  // ─ Input ─
+  taxi.thrustUp    = input.up;
+  taxi.thrustLeft  = input.left;
+  taxi.thrustRight = input.right;
+
+  // ─ Physics ─
+  // If landed but thrusting, take off
+  if (taxi.landed && taxi.thrustUp && taxi.fuel > 0) {
+    taxi.landed = false;
+    taxi.landedPad = -1;
+    taxi.vy = -0.5; // small upward kick to clear the pad
+  }
+
+  if (!taxi.landed) {
+    taxi.vy += lvl.gravity;
+
+    if (taxi.thrustUp && taxi.fuel > 0)    { taxi.vy -= 0.12; taxi.fuel -= 0.12; }
+    if (taxi.thrustLeft && taxi.fuel > 0)  { taxi.vx -= 0.08; taxi.fuel -= 0.06; }
+    if (taxi.thrustRight && taxi.fuel > 0) { taxi.vx += 0.08; taxi.fuel -= 0.06; }
+
+    // Drag
+    taxi.vx *= 0.995;
+    taxi.vy *= 0.998;
+
+    taxi.x += taxi.vx;
+    taxi.y += taxi.vy;
+
+    // Thrust particles (engine sound is driven from gameLoop, not per-step)
+    if (taxi.thrustUp && taxi.fuel > 0) {
+      spawnThrustParticles(taxi.x + taxi.w/2, taxi.y + taxi.h, "up");
+    }
+    // Exhaust leaves the side OPPOSITE the direction of travel: thrusting left
+    // fires the starboard jet, and vice versa.
+    if (taxi.thrustLeft && taxi.fuel > 0)
+      spawnThrustParticles(taxi.x + taxi.w, taxi.y + taxi.h/2, "left");
+    if (taxi.thrustRight && taxi.fuel > 0)
+      spawnThrustParticles(taxi.x, taxi.y + taxi.h/2, "right");
+  } else {
+    taxi.vx = 0;
+    taxi.vy = 0;
+  }
+
+  // Fuel warning
+  if (taxi.fuel < 20 && taxi.fuel > 0 && levelTimer % 60 === 0) sndFuelWarn();
+  if (taxi.fuel <= 0) taxi.fuel = 0;
+
+  // ─ Boundary check ─
+  if (taxi.x < 0) { taxi.x = 0; taxi.vx = 0; }
+  if (taxi.x + taxi.w > W) { taxi.x = W - taxi.w; taxi.vx = 0; }
+  if (taxi.y < 0) { taxi.y = 0; taxi.vy = 0; }
+
+  // Floor crash
+  if (taxi.y + taxi.h > H) {
+    crash();
+    return;
+  }
+
+  // ─ Landing gear ─
+  // Extends automatically near any landing surface; touching down before it is
+  // fully out is a crash, so a dive-bomb approach can never stick a landing.
+  const wantGear = taxi.landed || nearLandingSurface();
+  taxi.gear = Math.max(0, Math.min(1,
+    taxi.gear + (wantGear ? GEAR_DEPLOY : -GEAR_RETRACT)));
+  const gearDrop = GEAR_LEN * taxi.gear;
+
+  // ─ Obstacle collision ─
+  const taxiRect = { x: taxi.x, y: taxi.y, w: taxi.w, h: taxi.h };
+  for (const obs of obstacles) {
+    if (rectOverlap(taxiRect, obs)) {
+      crash();
+      return;
+    }
+  }
+
+  // ─ Pad landing / collision ─
+  // Landing is re-detected every step while the taxi rests on a pad, so the
+  // touchdown thump has to fire on the edge, not on the state.
+  const wasAirborne = !taxi.landed;
+  taxi.landed = false;
+  taxi.landedPad = -1;
+  for (let i = 0; i < pads.length; i++) {
+    const result = tryTouchdown(pads[i], PAD_SNAP, gearDrop, wasAirborne);
+    if (result === "crash") return;
+    if (result === "land") taxi.landedPad = i;
+  }
+
+  // ─ Fuel station ─
+  if (lvl.fuelStations) {
+    for (const fs of lvl.fuelStations) {
+      const result = tryTouchdown(fs, FUEL_SNAP, gearDrop, wasAirborne);
+      if (result === "crash") return;
+      if (result !== "land") continue;
+
+      // Refuel — but never with a fare aboard. Triggers on the first drop of
+      // fuel actually taken, so merely touching down with a full tank is free.
+      if (taxi.fuel < taxi.maxFuel) {
+        if (taxi.hasPassenger) {
+          refuelViolation();
+          return;
+        }
+        taxi.fuel = Math.min(taxi.maxFuel, taxi.fuel + 0.5);
+        if (levelTimer % 30 === 0) beep(440, 0.05, "sine", 0.04);
+      }
+    }
+  }
+
+  // ─ Passenger logic ─
+  for (const p of passengers) {
+    if (p.phase === "delivered") continue;
+
+    // Release the next fare once the previous one has been dropped off
+    if (p.phase === "queued") {
+      const prevDelivered = p.index === 0 || passengers[p.index - 1].phase === "delivered";
+      if (prevDelivered) {
+        p.phase = "waiting";
+        p.active = true;
+        p.x = passengerStandX(pads[p.padIndex],
+                              taxi.landed && taxi.landedPad === p.padIndex);
+      }
+    }
+
+    const pad = pads[p.padIndex];
+
+    // Standing on the pad, waving for a taxi
+    if (p.phase === "waiting") {
+      p.heyTimer++;
+      if (p.heyTimer > 150) {
+        addMessage("HEY TAXI!", pad.x + pad.w/2, pad.y - 30, C.hotYellow, 60);
+        sndHeyTaxi();
+        p.heyTimer = 0;
+      }
+
+      // Land on top of them and they are gone
+      if (rectOverlap(
+            { x: taxi.x, y: taxi.y, w: taxi.w, h: taxi.h + gearDrop },
+            { x: p.x - PERSON_HALF_W, y: pad.y - 14, w: PERSON_HALF_W * 2, h: 14 })) {
+        crash("PASSENGER CRUSHED!");
+        return;
+      }
+
+      // Landed safely beside them — they start walking over
+      if (taxi.landed && taxi.landedPad === p.padIndex && !taxi.hasPassenger) {
+        p.phase = "boarding";
+      }
+    }
+
+    // Walking across the pad towards the taxi door
+    else if (p.phase === "boarding") {
+      // Taxi left before they made it — go back to waiting where they stand
+      if (!taxi.landed || taxi.landedPad !== p.padIndex || taxi.hasPassenger) {
+        p.phase = "waiting";
+        p.heyTimer = 0;
+      } else {
+        const door = taxi.x + taxi.w/2;
+        const dx = door - p.x;
+        p.x += Math.sign(dx) * Math.min(PERSON_WALK, Math.abs(dx));
+
+        if (Math.abs(dx) <= PERSON_WALK) {
+          p.phase = "aboard";
+          taxi.hasPassenger = true;
+          taxi.passengerDest = p.destPadIndex;
+          sndPickup();
+          const destPad = pads[p.destPadIndex];
+          addMessage("TO PAD " + destPad.label + "!", taxi.x + taxi.w/2, taxi.y - 20, C.padGreen, 90);
+          score += 10;
+        }
+      }
+    }
+
+    // Drop off
+    else if (p.phase === "aboard") {
+      if (taxi.landed && taxi.landedPad === p.destPadIndex) {
+        p.phase = "delivered";
+        taxi.hasPassenger = false;
+        taxi.passengerDest = -1;
+        sndDropoff();
+        addMessage("$" + 50 + " TIP!", taxi.x + taxi.w/2, taxi.y - 20, C.padGreen, 60);
+        score += 50;
+        totalPassengersDelivered++;
+      }
+    }
+  }
+
+  // ─ Check level complete ─
+  if (passengers.every(p => p.phase === "delivered")) {
+    state = "levelComplete";
+    sndLevelUp();
+    score += 100; // level bonus
+  }
+
+  // ─ Update particles ─
+  updateParticles();
+  updateMessages();
+}
+
+// Shared ending for every life-losing event. Clearing the rumble flags without
+// cancelling matters: gameLoop would otherwise see a stale `rumbling` this frame
+// and fire vibrate(0) straight over the buzz we just sent.
+function loseLife(reason) {
+  crashReason = reason;
+  rumbling = false;
+  rumbleTick = 0;
+  lives--;
+  state = lives <= 0 ? "gameOver" : "crashed";
+}
+
+function crash(reason = "CRASHED!") {
+  spawnExplosion(taxi.x + taxi.w/2, taxi.y + taxi.h/2);
+  sndCrash();
+  vibrate([60, 40, 120]);
+  loseLife(reason);
+}
+
+// Refuelling with a fare aboard. No wreck and no explosion — the taxi is fine,
+// the passenger is not, so it gets its own sound rather than the crash noise.
+function refuelViolation() {
+  sndSad();
+  vibrate([180]);
+  loseLife("NO REFUELLING WITH A FARE!");
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.03;
+    p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+function updateMessages() {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    messages[i].y -= 0.3;
+    messages[i].life--;
+    if (messages[i].life <= 0) messages.splice(i, 1);
+  }
+}
+
+// ── Draw ────────────────────────────────────────────────────
+function draw() {
+  // Background
+  ctx.fillStyle = C.black;
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  drawStars();
+
+  if (state === "title") {
+    drawTitle();
+    return;
+  }
+  if (state === "gameOver") {
+    drawGameOver();
+    return;
+  }
+  if (state === "win") {
+    drawWin();
+    return;
+  }
+
+  const lvl = LEVELS[level];
+
+  // Obstacles
+  for (const obs of obstacles) {
+    ctx.fillStyle = C.grey;
+    ctx.fillRect(obs.x, obs.y, obs.w, obs.h);
+    ctx.strokeStyle = C.lightGrey;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(obs.x, obs.y, obs.w, obs.h);
+  }
+
+  // Fuel stations — turn red and read NO FUEL while a fare is aboard, so the
+  // rule is visible before it is punished
+  if (lvl.fuelStations) {
+    const barred = taxi.hasPassenger;
+    for (const fs of lvl.fuelStations) {
+      ctx.fillStyle = barred ? C.red : C.orange;
+      ctx.fillRect(fs.x, fs.y, fs.w, 6);
+      ctx.fillStyle = barred ? C.lightRed : C.hotOrange;
+      ctx.fillRect(fs.x + 2, fs.y + 1, fs.w - 4, 3);
+      ctx.font = "7px 'Press Start 2P'";
+      ctx.fillStyle = barred ? C.lightRed : C.hotOrange;
+      ctx.textAlign = "center";
+      ctx.fillText(barred ? "NO FUEL" : "FUEL", fs.x + fs.w/2, fs.y - 4);
+    }
+  }
+
+  // Pads. The marker shows the destination while carrying a fare and the pickup
+  // pad while empty — without the latter, the empty legs of a random route would
+  // be blind searching.
+  const activeFare = passengers.find(p => p.phase === "waiting" || p.phase === "boarding");
+  for (let i = 0; i < pads.length; i++) {
+    const pad = pads[i];
+    // Platform base
+    ctx.fillStyle = pad.color;
+    ctx.fillRect(pad.x, pad.y, pad.w, 6);
+    // Striped top
+    ctx.fillStyle = C.black;
+    for (let sx = pad.x + 2; sx < pad.x + pad.w; sx += 8) {
+      ctx.fillRect(sx, pad.y, 4, 2);
+    }
+    // Legs
+    ctx.fillStyle = pad.color;
+    ctx.fillRect(pad.x + 4, pad.y + 6, 3, 10);
+    ctx.fillRect(pad.x + pad.w - 7, pad.y + 6, 3, 10);
+    // Label
+    ctx.font = "9px 'Press Start 2P'";
+    ctx.fillStyle = pad.color;
+    ctx.textAlign = "center";
+    ctx.fillText("PAD " + pad.label, pad.x + pad.w/2, pad.y + 26);
+
+    const isDest   = taxi.hasPassenger && taxi.passengerDest === i;
+    const isPickup = !taxi.hasPassenger && activeFare && activeFare.padIndex === i;
+    if (isDest || isPickup) {
+      const blink = Math.sin(levelTimer * 0.15) > 0;
+      if (blink) {
+        ctx.fillStyle = isDest ? C.hotYellow : C.padGreen;
+        ctx.fillText("▼", pad.x + pad.w/2, pad.y - 12);
+      }
+    }
+  }
+
+  // Waiting / boarding passenger (little person sprite)
+  for (const p of passengers) {
+    if (p.phase === "waiting" || p.phase === "boarding") {
+      const pad = pads[p.padIndex];
+      drawPerson(p.x, pad.y - 2, C.hotYellow, p.phase === "boarding");
+    }
+  }
+
+  // Taxi
+  if (state === "playing" || state === "levelComplete") {
+    drawTaxi();
+  }
+
+  // Particles
+  for (const p of particles) {
+    const alpha = p.life / p.maxLife;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x - 1, p.y - 1, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+
+  // Messages
+  for (const m of messages) {
+    const alpha = Math.min(1, m.life / 20);
+    ctx.globalAlpha = alpha;
+    ctx.font = "10px 'Press Start 2P'";
+    ctx.fillStyle = m.color;
+    ctx.textAlign = "center";
+    ctx.fillText(m.text, m.x, m.y);
+  }
+  ctx.globalAlpha = 1;
+
+  // HUD
+  drawHUD();
+
+  // State overlays
+  if (state === "crashed") {
+    drawOverlay(crashReason, actionHint("RETRY"), C.red);
+  }
+  if (state === "levelComplete") {
+    drawOverlay("LEVEL COMPLETE!", actionHint("CONTINUE"), C.padGreen);
+  }
+}
+
+function drawTaxi() {
+  const tx = taxi.x, ty = taxi.y, tw = taxi.w, th = taxi.h;
+
+  // Body
+  ctx.fillStyle = C.hotYellow;
+  ctx.fillRect(tx + 2, ty + 4, tw - 4, th - 6);
+
+  // Cockpit dome
+  ctx.fillStyle = C.skyBlue;
+  ctx.fillRect(tx + 8, ty, 16, 6);
+
+  // Windows
+  ctx.fillStyle = C.cyan;
+  ctx.fillRect(tx + 4, ty + 6, 5, 4);
+  ctx.fillRect(tx + tw - 9, ty + 6, 5, 4);
+
+  // Stripe
+  ctx.fillStyle = C.black;
+  ctx.fillRect(tx + 2, ty + 10, tw - 4, 2);
+
+  // "TAXI" sign on top
+  ctx.fillStyle = C.white;
+  ctx.font = "5px 'Press Start 2P'";
+  ctx.textAlign = "center";
+  ctx.fillText("TAXI", tx + tw/2, ty + 3);
+
+  // Landing gear — housings always visible, struts extend as taxi.gear grows
+  ctx.fillStyle = C.lightGrey;
+  ctx.fillRect(tx + 4, ty + th - 2, 6, 2);
+  ctx.fillRect(tx + tw - 10, ty + th - 2, 6, 2);
+  if (taxi.gear > 0.02) {
+    const legLen = GEAR_LEN * taxi.gear;
+    ctx.fillStyle = taxi.gear >= 1 ? C.lightGrey : C.grey;
+    ctx.fillRect(tx + 6, ty + th, 2, legLen);
+    ctx.fillRect(tx + tw - 8, ty + th, 2, legLen);
+    // Feet
+    ctx.fillRect(tx + 3, ty + th + legLen, 8, 2);
+    ctx.fillRect(tx + tw - 11, ty + th + legLen, 8, 2);
+  }
+
+  // Show passenger indicator
+  if (taxi.hasPassenger) {
+    ctx.fillStyle = C.padGreen;
+    ctx.fillRect(tx + tw/2 - 2, ty - 4, 4, 4);
+  }
+
+  // Thrust flames
+  if (taxi.thrustUp && taxi.fuel > 0 && !taxi.landed) {
+    const fh = 4 + Math.random() * 6;
+    ctx.fillStyle = C.hotOrange;
+    ctx.fillRect(tx + tw/2 - 4, ty + th, 8, fh);
+    ctx.fillStyle = C.hotYellow;
+    ctx.fillRect(tx + tw/2 - 2, ty + th, 4, fh - 2);
+  }
+  // Thrusting left fires the starboard jet, so the flame sits on the right
+  if (taxi.thrustLeft && taxi.fuel > 0 && !taxi.landed) {
+    const fw = 3 + Math.random() * 4;
+    ctx.fillStyle = C.hotOrange;
+    ctx.fillRect(tx + tw, ty + th/2 - 2, fw, 4);
+  }
+  if (taxi.thrustRight && taxi.fuel > 0 && !taxi.landed) {
+    const fw = 3 + Math.random() * 4;
+    ctx.fillStyle = C.hotOrange;
+    ctx.fillRect(tx - fw, ty + th/2 - 2, fw, 4);
+  }
+}
+
+function drawPerson(x, y, color, walking = false) {
+  const step = Math.sin(levelTimer * (walking ? 0.35 : 0.1)) > 0;
+  // Head
+  ctx.fillStyle = color;
+  ctx.fillRect(x - 2, y - 12, 5, 5);
+  // Body
+  ctx.fillRect(x - 2, y - 7, 5, 6);
+  // Legs — striding while walking, planted while waiting
+  if (walking) {
+    ctx.fillRect(x - (step ? 5 : 2), y - 1, 3, 3);
+    ctx.fillRect(x + (step ? 2 : 0), y - 1, 3, 3);
+  } else {
+    ctx.fillRect(x - 3, y - 1, 3, 3);
+    ctx.fillRect(x + 1, y - 1, 3, 3);
+  }
+  // Arms — waving for a taxi, swinging while walking
+  if (walking) {
+    ctx.fillRect(x - 5, y - (step ? 8 : 6), 3, 2);
+    ctx.fillRect(x + 4, y - (step ? 6 : 8), 3, 2);
+  } else if (step) {
+    ctx.fillRect(x - 5, y - 10, 3, 2);
+    ctx.fillRect(x + 4, y - 7, 3, 2);
+  } else {
+    ctx.fillRect(x - 5, y - 7, 3, 2);
+    ctx.fillRect(x + 4, y - 10, 3, 2);
+  }
+}
+
+let starField = [];
+for (let i = 0; i < 80; i++) {
+  starField.push({
+    x: Math.random() * W,
+    y: Math.random() * H,
+    s: Math.random() * 2 + 0.5,
+    b: Math.random(),
+  });
+}
+
+function drawStars() {
+  for (const s of starField) {
+    const flicker = 0.6 + 0.4 * Math.sin(levelTimer * 0.02 + s.b * 10);
+    ctx.globalAlpha = flicker * 0.6;
+    ctx.fillStyle = C.white;
+    ctx.fillRect(s.x, s.y, s.s, s.s);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHUD() {
+  const barY = 4, barH = 10;
+
+  // Score
+  ctx.font = "10px 'Press Start 2P'";
+  ctx.fillStyle = C.skyBlue;
+  ctx.textAlign = "left";
+  ctx.fillText("SCORE: " + score, 10, 18);
+
+  // Level
+  ctx.textAlign = "center";
+  ctx.fillText("LEVEL " + (level + 1), W/2, 18);
+
+  // Lives
+  ctx.textAlign = "right";
+  ctx.fillText("LIVES: " + lives, W - 120, 18);
+
+  // Fuel bar
+  ctx.fillStyle = C.darkGrey;
+  ctx.fillRect(W - 110, barY + 2, 102, barH);
+  const fuelPct = taxi.fuel / taxi.maxFuel;
+  const fuelColor = fuelPct > 0.3 ? C.padGreen : (fuelPct > 0.1 ? C.hotOrange : C.red);
+  ctx.fillStyle = fuelColor;
+  ctx.fillRect(W - 109, barY + 3, fuelPct * 100, barH - 2);
+  ctx.font = "7px 'Press Start 2P'";
+  ctx.fillStyle = C.white;
+  ctx.textAlign = "center";
+  ctx.fillText("FUEL", W - 58, barY + barH);
+
+  // Passenger indicator
+  const delivered = passengers ? passengers.filter(p => p.phase === "delivered").length : 0;
+  const total = passengers ? passengers.length : 0;
+  ctx.font = "8px 'Press Start 2P'";
+  ctx.fillStyle = C.hotYellow;
+  ctx.textAlign = "left";
+  ctx.fillText("FARES: " + delivered + "/" + total, 10, 36);
+
+  // Speed indicator
+  if (taxi) {
+    const speed = Math.sqrt(taxi.vx*taxi.vx + taxi.vy*taxi.vy);
+    const speedColor = speed > 1.5 ? C.red : (speed > 1.0 ? C.hotOrange : C.padGreen);
+    ctx.fillStyle = speedColor;
+    ctx.textAlign = "right";
+    ctx.fillText("SPD: " + speed.toFixed(1), W - 10, 36);
+
+    // Gear indicator — landing is only allowed once this reads DOWN
+    ctx.textAlign = "center";
+    ctx.fillStyle = taxi.gear >= 1 ? C.padGreen : (taxi.gear > 0 ? C.hotOrange : C.darkGrey);
+    ctx.fillText("GEAR " + (taxi.gear >= 1 ? "DOWN" : "UP"), W/2, 36);
+  }
+}
+
+function drawOverlay(title, subtitle, color) {
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(0, H/2 - 50, W, 100);
+
+  ctx.font = "20px 'Press Start 2P'";
+  ctx.fillStyle = color;
+  ctx.textAlign = "center";
+  ctx.fillText(title, W/2, H/2 - 10);
+
+  ctx.font = "10px 'Press Start 2P'";
+  ctx.fillStyle = C.white;
+  ctx.fillText(subtitle, W/2, H/2 + 20);
+}
+
+function drawTitle() {
+  // Big title
+  ctx.font = "28px 'Press Start 2P'";
+  ctx.fillStyle = C.hotYellow;
+  ctx.textAlign = "center";
+  ctx.fillText("SPACE TAXI", W/2, 140);
+
+  // Taxi sprite in title
+  ctx.save();
+  ctx.translate(W/2 - 30, 170);
+  ctx.fillStyle = C.hotYellow;
+  ctx.fillRect(0, 4, 60, 24);
+  ctx.fillStyle = C.skyBlue;
+  ctx.fillRect(14, 0, 32, 8);
+  ctx.fillStyle = C.black;
+  ctx.fillRect(0, 16, 60, 3);
+  ctx.fillStyle = C.lightGrey;
+  ctx.fillRect(6, 26, 10, 3);
+  ctx.fillRect(44, 26, 10, 3);
+  ctx.fillStyle = C.white;
+  ctx.font = "8px 'Press Start 2P'";
+  ctx.textAlign = "center";
+  ctx.fillText("TAXI", 30, 7);
+  ctx.restore();
+
+  ctx.font = "10px 'Press Start 2P'";
+  ctx.fillStyle = C.cyan;
+  ctx.fillText("A COMMODORE 64 CLASSIC", W/2, 230);
+
+  ctx.fillStyle = C.lightGrey;
+  ctx.fillText("PICK UP PASSENGERS", W/2, 258);
+  ctx.fillText("FLY THEM TO THEIR DESTINATION", W/2, 278);
+  ctx.font = "9px 'Press Start 2P'";
+  ctx.fillText("LAND BESIDE THEM - NOT ON THEM!", W/2, 300);
+  ctx.fillText("GEAR MUST BE DOWN TO TOUCH DOWN", W/2, 318);
+  ctx.fillStyle = C.lightRed;
+  ctx.fillText("NEVER REFUEL WITH A FARE ABOARD", W/2, 336);
+
+  if (isTouchDevice) {
+    ctx.font = "8px 'Press Start 2P'";
+    ctx.fillStyle = C.cyan;
+    ctx.fillText("USE THE ON-SCREEN CONTROLS", W/2, 356);
+  }
+
+  ctx.font = "11px 'Press Start 2P'";
+  const blink = Math.sin(Date.now() * 0.005) > 0;
+  if (blink) {
+    ctx.fillStyle = C.hotYellow;
+    ctx.fillText(actionHint("START"), W/2, 380);
+  }
+
+  // The seed makes a run repeatable: open the page with ?seed=<number>
+  ctx.font = "7px 'Press Start 2P'";
+  ctx.fillStyle = C.darkGrey;
+  ctx.fillText("SEED " + runSeed + (forcedSeed !== null ? " (FIXED)" : ""), W/2, 412);
+
+  ctx.font = "8px 'Press Start 2P'";
+  ctx.fillStyle = C.grey;
+  ctx.fillText("© 2026 WEB REMAKE", W/2, 460);
+}
+
+function drawGameOver() {
+  ctx.font = "28px 'Press Start 2P'";
+  ctx.fillStyle = C.red;
+  ctx.textAlign = "center";
+  ctx.fillText("GAME OVER", W/2, H/2 - 30);
+
+  ctx.font = "12px 'Press Start 2P'";
+  ctx.fillStyle = C.white;
+  ctx.fillText("FINAL SCORE: " + score, W/2, H/2 + 10);
+  ctx.fillText("FARES DELIVERED: " + totalPassengersDelivered, W/2, H/2 + 35);
+
+  const blink = Math.sin(Date.now() * 0.005) > 0;
+  if (blink) {
+    ctx.font = "10px 'Press Start 2P'";
+    ctx.fillStyle = C.hotYellow;
+    ctx.fillText(actionHint("PLAY AGAIN"), W/2, H/2 + 70);
+  }
+}
+
+function drawWin() {
+  ctx.font = "22px 'Press Start 2P'";
+  ctx.fillStyle = C.padGreen;
+  ctx.textAlign = "center";
+  ctx.fillText("CONGRATULATIONS!", W/2, H/2 - 50);
+
+  ctx.font = "12px 'Press Start 2P'";
+  ctx.fillStyle = C.hotYellow;
+  ctx.fillText("ALL LEVELS COMPLETE!", W/2, H/2 - 15);
+
+  ctx.fillStyle = C.white;
+  ctx.fillText("FINAL SCORE: " + score, W/2, H/2 + 15);
+  ctx.fillText("FARES DELIVERED: " + totalPassengersDelivered, W/2, H/2 + 40);
+
+  const blink = Math.sin(Date.now() * 0.005) > 0;
+  if (blink) {
+    ctx.font = "10px 'Press Start 2P'";
+    ctx.fillStyle = C.hotYellow;
+    ctx.fillText(actionHint("PLAY AGAIN"), W/2, H/2 + 80);
+  }
+}
+
+// ── Main Loop ───────────────────────────────────────────────
+// Fixed timestep: the simulation always advances in 1/60s slices, so every
+// existing physics constant and every `levelTimer % n` counter keeps its
+// original meaning regardless of whether the display runs at 60 or 120 Hz.
+const STEP = 1000 / 60;
+const MAX_STEPS = 5;
+let accumulator = 0;
+let lastFrame = performance.now();
+
+function applyPauseState() {
+  const next = shouldPause();
+  if (next === paused) return;
+  paused = next;
+  if (paused) {
+    resetInput();           // otherwise a held thrust stays stuck on return
+    setThrustSound(false, false);
+    stopRumble();
+    setAudioSuspended(true);
+  } else {
+    accumulator = 0;        // don't replay the time spent in the background
+    lastFrame = performance.now();
+    setAudioSuspended(false);
+  }
+}
+
+function gameLoop(now) {
+  requestAnimationFrame(gameLoop);
+  applyPauseState();
+
+  const elapsed = now - lastFrame;
+  lastFrame = now;
+
+  if (!paused) {
+    accumulator += Math.min(elapsed, STEP * MAX_STEPS);
+    let steps = 0;
+    while (accumulator >= STEP && steps++ < MAX_STEPS) {
+      input.up    = kbHeld.up    || touchHeld.up;
+      input.left  = kbHeld.left  || touchHeld.left;
+      input.right = kbHeld.right || touchHeld.right;
+      handleInput();
+      update();
+      accumulator -= STEP;
+    }
+  }
+
+  // Engine sound and rumble are driven once per frame from the live taxi
+  // state, so they stay correct in every game state - including crashed,
+  // paused and the title screen, where update() never runs.
+  const flying = !paused && state === "playing" && taxi && !taxi.landed && taxi.fuel > 0;
+  setThrustSound(flying && taxi.thrustUp,
+                 flying && (taxi.thrustLeft || taxi.thrustRight));
+  setThrustHaptics(flying && taxi.thrustUp);
+
+  draw();
+}
+
+function handleInput() {
+  if (input.action) {
+    input.action = false;
+    unlockAudio();
+    if (state === "title" || state === "gameOver" || state === "win") {
+      level = 0;
+      score = 0;
+      lives = 3;
+      totalPassengersDelivered = 0;
+      // A forced ?seed= replays the same run every time; otherwise roll a new one
+      if (forcedSeed !== null) { runSeed = forcedSeed; initCount = 0; }
+      else newRunSeed();
+      initLevel();
+    } else if (state === "crashed") {
+      initLevel();
+    } else if (state === "levelComplete") {
+      level++;
+      if (level >= LEVELS.length) {
+        state = "win";
+      } else {
+        initLevel();
+      }
+    }
+  }
+}
+
+// Start
+if (forcedSeed !== null) { runSeed = forcedSeed; initCount = 0; }
+else newRunSeed();
+totalPassengersDelivered = 0;
+particles = [];
+messages = [];
+taxi = createTaxi();
+passengers = [];
+pads = [];
+obstacles = [];
+
+document.addEventListener("visibilitychange", applyPauseState);
+window.addEventListener("blur",  () => { windowBlurred = true;  applyPauseState(); });
+window.addEventListener("focus", () => { windowBlurred = false; applyPauseState(); });
+
+layoutCanvas();
+requestAnimationFrame(gameLoop);
+
+})();
+</script>
+</body>
+</html>
