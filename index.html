@@ -357,72 +357,66 @@ function setThrustSound(main, side) {
   } catch (e) {}
 }
 
-// ── "HEY TAXI!" speech ──────────────────────────────────────
-// speechSynthesis output CANNOT be routed through the AudioContext in any
-// browser, so it cannot be bit-crushed. Only pitch/rate/voice are adjustable.
-// The retro character therefore comes from a low pitch plus a separate crackle
-// layer played underneath. Swap speakHeyTaxi() for heyTaxiBeeps() if the system
-// voice sounds too clean.
-let ttsVoices = [];
-function refreshVoices() {
-  try { ttsVoices = window.speechSynthesis.getVoices() || []; } catch (e) { ttsVoices = []; }
-}
-if ("speechSynthesis" in window) {
-  refreshVoices();
-  window.speechSynthesis.addEventListener("voiceschanged", refreshVoices);
-}
+// ── "HEY TAXI!" sample ──────────────────────────────────────
+// A recorded sample replaces the former speechSynthesis call. Three reasons:
+// it plays through the AudioContext that is already unlocked, so iOS - where
+// speechSynthesis needs the first utterance to come from a user gesture and the
+// game only ever calls this from a timer - works like everything else; it can be
+// filtered and distorted, which speechSynthesis never could; and it sounds the
+// same on every device instead of depending on the installed system voice.
+//
+// Embedded as base64 rather than fetched: 3.4 KB is nothing, it keeps the game a
+// single file, and fetch() would fail under file:// on CORS grounds.
+const HEY_TAXI_MP3_B64 = "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";
 
-// Gritty noise + gated tone under the voice, standing in for sample degradation
-function heyTaxiCrackle() {
-  if (!audioCtx || !engine) return;
+let heyTaxiBuffer = null;
+let heyTaxiVoice  = null;      // currently playing source, so shouts don't stack
+let heyTaxiState  = "idle";    // idle | loading | ready | failed
+
+function loadHeyTaxiSample() {
+  if (heyTaxiState !== "idle" || !audioCtx) return;
+  heyTaxiState = "loading";
   try {
-    const t = audioCtx.currentTime;
-    const src = audioCtx.createBufferSource();
-    src.buffer = engine.src.buffer;
-    src.loop = true;
-    const band = audioCtx.createBiquadFilter();
-    band.type = "bandpass"; band.frequency.value = 1400; band.Q.value = 0.8;
-    const g = audioCtx.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    // stutter the gain in steps so it reads as a chopped-up sample
-    for (let i = 0; i < 10; i++) {
-      g.gain.setValueAtTime(i % 2 ? 0.035 : 0.008, t + i * 0.045);
-    }
-    g.gain.setValueAtTime(0.0001, t + 0.46);
-    src.connect(band).connect(g).connect(audioCtx.destination);
-    src.start(t); src.stop(t + 0.5);
-  } catch (e) {}
+    const bin = atob(HEY_TAXI_MP3_B64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    // Callback form: the promise form is missing on older Safari
+    audioCtx.decodeAudioData(
+      bytes.buffer,
+      buf => { heyTaxiBuffer = buf; heyTaxiState = "ready"; },
+      ()  => { heyTaxiState = "failed"; }
+    );
+  } catch (e) {
+    heyTaxiState = "failed";
+  }
 }
 
-function heyTaxiBeeps() { beep(600,.08); setTimeout(()=>beep(800,.12),100); }
-
-function speakHeyTaxi() {
-  if (!("speechSynthesis" in window)) return false;
+function playHeyTaxiSample() {
+  if (heyTaxiState !== "ready" || !heyTaxiBuffer || !audioCtx) return false;
   try {
-    const u = new SpeechSynthesisUtterance("Hey! Taxi!");
-    u.pitch  = 0.3;    // range 0-2; as guttural as the API allows
-    u.rate   = 0.85;
-    u.volume = 0.9;
-    const voice = ttsVoices.find(v => /^en/i.test(v.lang)) || ttsVoices[0];
-    if (voice) u.voice = voice;
-    let spoke = false;
-    u.onstart = () => { spoke = true; };
-    u.onerror = () => { if (!spoke) heyTaxiBeeps(); };
-    window.speechSynthesis.cancel();   // never queue up a backlog of shouts
-    window.speechSynthesis.speak(u);
-    // Nothing started within 400ms means the voice never came - fall back
-    setTimeout(() => { if (!spoke) heyTaxiBeeps(); }, 400);
+    // Cut off a shout still running, rather than layering two on top of another
+    if (heyTaxiVoice) { try { heyTaxiVoice.stop(); } catch (e) {} }
+    const src  = audioCtx.createBufferSource();
+    const gain = audioCtx.createGain();
+    src.buffer = heyTaxiBuffer;
+    gain.gain.value = 0.9;
+    src.connect(gain).connect(audioCtx.destination);
+    src.onended = () => { if (heyTaxiVoice === src) heyTaxiVoice = null; };
+    src.start();
+    heyTaxiVoice = src;
     return true;
   } catch (e) {
     return false;
   }
 }
 
+// Used while the sample is still decoding, and if decoding ever fails
+function heyTaxiBeeps() { beep(600,.08); setTimeout(()=>beep(800,.12),100); }
+
 function sndHeyTaxi() {
   ensureAudio();
-  ensureEngine();
-  heyTaxiCrackle();
-  if (!speakHeyTaxi()) heyTaxiBeeps();
+  loadHeyTaxiSample();
+  if (!playHeyTaxiSample()) heyTaxiBeeps();
   vibrate([25, 50, 25]);
 }
 
@@ -431,6 +425,8 @@ function unlockAudio() {
   try {
     ensureAudio();
     if (audioCtx.state === "suspended") audioCtx.resume();
+    // Decode here, in a real gesture, so the first shout is never a beep
+    loadHeyTaxiSample();
   } catch (e) {}
 }
 function setAudioSuspended(suspend) {
