@@ -225,8 +225,16 @@ const ctx = canvas.getContext("2d");
 // World coordinates are FIXED. The canvas backing store is resized to the
 // device's real pixel resolution, but every level coordinate, HUD position and
 // physics constant keeps addressing this 800x500 space via the ctx transform.
-const W = 800;
-const H = 500;
+// The visible viewport. Fixed, and identical to one sector.
+const VIEW_W = 800;
+const VIEW_H = 500;
+const SECTOR_W = VIEW_W;
+const SECTOR_H = VIEW_H;
+
+// The playfield of the running level, derived from its sector grid. A one-sector
+// level is exactly the viewport, which is why the camera never moves there.
+let worldW = SECTOR_W;
+let worldH = SECTOR_H;
 
 const isTouchDevice = window.matchMedia("(pointer: coarse)").matches;
 document.documentElement.classList.toggle("is-touch", isTouchDevice);
@@ -499,9 +507,9 @@ function layoutCanvas() {
   // Uniform scale keeps the 8:5 world undistorted, so the tighter axis wins.
   // On a 16:9 monitor that is the height, which leaves side margins - the world
   // is a fixed 800x500 and cannot be widened without moving every level pad.
-  const scale = Math.max(0.1, Math.min(availW / W, availH / H));
-  const cssW = Math.floor(W * scale);
-  const cssH = Math.floor(H * scale);
+  const scale = Math.max(0.1, Math.min(availW / VIEW_W, availH / VIEW_H));
+  const cssW = Math.floor(VIEW_W * scale);
+  const cssH = Math.floor(VIEW_H * scale);
 
   let dpr = window.devicePixelRatio || 1;
   const budget = Math.sqrt(MAX_BACKING_PIXELS / Math.max(1, cssW * cssH));
@@ -513,7 +521,7 @@ function layoutCanvas() {
   canvas.height = Math.round(cssH * dpr);
 
   // Resizing the backing store resets all context state, so re-apply it here.
-  ctx.setTransform(canvas.width / W, 0, 0, canvas.height / H, 0, 0);
+  ctx.setTransform(canvas.width / VIEW_W, 0, 0, canvas.height / VIEW_H, 0, 0);
   ctx.imageSmoothingEnabled = false;
 }
 
@@ -638,6 +646,7 @@ const LEVELS = [
   { // Level 1 — "Easy City"
     name: "EASY CITY",
     gravity: 0.04,
+    cols: 1, rows: 1,
     pads: [
       { x: 50,  y: 430, w: 130, label: "1", color: C.padGreen },
       { x: 350, y: 350, w: 130, label: "2", color: C.hotYellow },
@@ -653,6 +662,7 @@ const LEVELS = [
   { // Level 2 — "Skyscraper"
     name: "SKYSCRAPER",
     gravity: 0.05,
+    cols: 1, rows: 1,
     pads: [
       { x: 20,  y: 450, w: 130, label: "A", color: C.padGreen },
       { x: 200, y: 320, w: 130, label: "B", color: C.hotYellow },
@@ -671,6 +681,7 @@ const LEVELS = [
   { // Level 3 — "The Cavern"
     name: "THE CAVERN",
     gravity: 0.055,
+    cols: 1, rows: 1,
     pads: [
       { x: 30,  y: 300, w: 120, label: "1", color: C.padGreen },
       { x: 250, y: 440, w: 130, label: "2", color: C.hotYellow },
@@ -694,6 +705,7 @@ const LEVELS = [
   { // Level 4 — "Metroplex"
     name: "METROPLEX",
     gravity: 0.06,
+    cols: 1, rows: 1,
     pads: [
       { x: 10,  y: 450, w: 130, label: "A", color: C.padGreen },
       { x: 160, y: 280, w: 115, label: "B", color: C.hotYellow },
@@ -715,6 +727,7 @@ const LEVELS = [
   { // Level 5 — "Space Station"
     name: "SPACE STATION",
     gravity: 0.035,
+    cols: 1, rows: 1,
     pads: [
       { x: 12,  y: 240, w: 120, label: "1", color: C.padGreen },
       { x: 200, y: 440, w: 130, label: "2", color: C.hotYellow },
@@ -886,6 +899,10 @@ function initLevel() {
   rngState = (runSeed + Math.imul(++initCount, 0x9E3779B9)) | 0;
 
   const lvl = LEVELS[level];
+  worldW = (lvl.cols || 1) * SECTOR_W;
+  worldH = (lvl.rows || 1) * SECTOR_H;
+  buildStarField();
+
   taxi = createTaxi();
   pads = lvl.pads.map(p => ({ ...p }));
   passengers = Array.from({ length: lvl.fares }, (_, i) => {
@@ -906,7 +923,9 @@ function initLevel() {
   messages = [];
   levelTimer = 0;
   state = "playing";
-  addMessage(lvl.name, W/2, H/2 - 40, C.skyBlue, 120);
+  // Placed relative to the taxi, not the world centre: in a multi-sector world
+  // the centre can sit far outside the view.
+  addMessage(lvl.name, taxi.x + taxi.w/2, taxi.y + 90, C.skyBlue, 120);
 }
 
 // ── Touchdown ───────────────────────────────────────────────
@@ -1004,11 +1023,11 @@ function update() {
 
   // ─ Boundary check ─
   if (taxi.x < 0) { taxi.x = 0; taxi.vx = 0; }
-  if (taxi.x + taxi.w > W) { taxi.x = W - taxi.w; taxi.vx = 0; }
+  if (taxi.x + taxi.w > worldW) { taxi.x = worldW - taxi.w; taxi.vx = 0; }
   if (taxi.y < 0) { taxi.y = 0; taxi.vy = 0; }
 
   // Floor crash
-  if (taxi.y + taxi.h > H) {
+  if (taxi.y + taxi.h > worldH) {
     crash();
     return;
   }
@@ -1200,7 +1219,7 @@ function updateMessages() {
 function draw() {
   // Background
   ctx.fillStyle = C.black;
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 
   // Stars
   drawStars();
@@ -1420,15 +1439,26 @@ function drawPerson(x, y, color, walking = false) {
   }
 }
 
+// Density stays constant as the world grows, so a big world is not an empty one.
+// Purely decorative, so plain Math.random() is correct here - see the
+// determinism note on the seeded rng above.
+const STARS_PER_SECTOR = 80;
 let starField = [];
-for (let i = 0; i < 80; i++) {
-  starField.push({
-    x: Math.random() * W,
-    y: Math.random() * H,
-    s: Math.random() * 2 + 0.5,
-    b: Math.random(),
-  });
+
+function buildStarField() {
+  const sectors = (worldW / SECTOR_W) * (worldH / SECTOR_H);
+  const count = Math.round(STARS_PER_SECTOR * sectors);
+  starField = [];
+  for (let i = 0; i < count; i++) {
+    starField.push({
+      x: Math.random() * worldW,
+      y: Math.random() * worldH,
+      s: Math.random() * 2 + 0.5,
+      b: Math.random(),
+    });
+  }
 }
+buildStarField();
 
 function drawStars() {
   for (const s of starField) {
@@ -1451,23 +1481,23 @@ function drawHUD() {
 
   // Level
   ctx.textAlign = "center";
-  ctx.fillText("LEVEL " + (level + 1), W/2, 18);
+  ctx.fillText("LEVEL " + (level + 1), VIEW_W/2, 18);
 
   // Lives
   ctx.textAlign = "right";
-  ctx.fillText("LIVES: " + lives, W - 120, 18);
+  ctx.fillText("LIVES: " + lives, VIEW_W - 120, 18);
 
   // Fuel bar
   ctx.fillStyle = C.darkGrey;
-  ctx.fillRect(W - 110, barY + 2, 102, barH);
+  ctx.fillRect(VIEW_W - 110, barY + 2, 102, barH);
   const fuelPct = taxi.fuel / taxi.maxFuel;
   const fuelColor = fuelPct > 0.3 ? C.padGreen : (fuelPct > 0.1 ? C.hotOrange : C.red);
   ctx.fillStyle = fuelColor;
-  ctx.fillRect(W - 109, barY + 3, fuelPct * 100, barH - 2);
+  ctx.fillRect(VIEW_W - 109, barY + 3, fuelPct * 100, barH - 2);
   ctx.font = "7px 'Press Start 2P'";
   ctx.fillStyle = C.white;
   ctx.textAlign = "center";
-  ctx.fillText("FUEL", W - 58, barY + barH);
+  ctx.fillText("FUEL", VIEW_W - 58, barY + barH);
 
   // Passenger indicator
   const delivered = passengers ? passengers.filter(p => p.phase === "delivered").length : 0;
@@ -1483,27 +1513,27 @@ function drawHUD() {
     const speedColor = speed > 1.5 ? C.red : (speed > 1.0 ? C.hotOrange : C.padGreen);
     ctx.fillStyle = speedColor;
     ctx.textAlign = "right";
-    ctx.fillText("SPD: " + speed.toFixed(1), W - 10, 36);
+    ctx.fillText("SPD: " + speed.toFixed(1), VIEW_W - 10, 36);
 
     // Gear indicator — landing is only allowed once this reads DOWN
     ctx.textAlign = "center";
     ctx.fillStyle = taxi.gear >= 1 ? C.padGreen : (taxi.gear > 0 ? C.hotOrange : C.darkGrey);
-    ctx.fillText("GEAR " + (taxi.gear >= 1 ? "DOWN" : "UP"), W/2, 36);
+    ctx.fillText("GEAR " + (taxi.gear >= 1 ? "DOWN" : "UP"), VIEW_W/2, 36);
   }
 }
 
 function drawOverlay(title, subtitle, color) {
   ctx.fillStyle = "rgba(0,0,0,0.6)";
-  ctx.fillRect(0, H/2 - 50, W, 100);
+  ctx.fillRect(0, VIEW_H/2 - 50, VIEW_W, 100);
 
   ctx.font = "20px 'Press Start 2P'";
   ctx.fillStyle = color;
   ctx.textAlign = "center";
-  ctx.fillText(title, W/2, H/2 - 10);
+  ctx.fillText(title, VIEW_W/2, VIEW_H/2 - 10);
 
   ctx.font = "10px 'Press Start 2P'";
   ctx.fillStyle = C.white;
-  ctx.fillText(subtitle, W/2, H/2 + 20);
+  ctx.fillText(subtitle, VIEW_W/2, VIEW_H/2 + 20);
 }
 
 function drawTitle() {
@@ -1511,11 +1541,11 @@ function drawTitle() {
   ctx.font = "28px 'Press Start 2P'";
   ctx.fillStyle = C.hotYellow;
   ctx.textAlign = "center";
-  ctx.fillText("SPACE TAXI", W/2, 140);
+  ctx.fillText("SPACE TAXI", VIEW_W/2, 140);
 
   // Taxi sprite in title
   ctx.save();
-  ctx.translate(W/2 - 30, 170);
+  ctx.translate(VIEW_W/2 - 30, 170);
   ctx.fillStyle = C.hotYellow;
   ctx.fillRect(0, 4, 60, 24);
   ctx.fillStyle = C.skyBlue;
@@ -1533,56 +1563,56 @@ function drawTitle() {
 
   ctx.font = "10px 'Press Start 2P'";
   ctx.fillStyle = C.cyan;
-  ctx.fillText("A COMMODORE 64 CLASSIC", W/2, 230);
+  ctx.fillText("A COMMODORE 64 CLASSIC", VIEW_W/2, 230);
 
   ctx.fillStyle = C.lightGrey;
-  ctx.fillText("PICK UP PASSENGERS", W/2, 258);
-  ctx.fillText("FLY THEM TO THEIR DESTINATION", W/2, 278);
+  ctx.fillText("PICK UP PASSENGERS", VIEW_W/2, 258);
+  ctx.fillText("FLY THEM TO THEIR DESTINATION", VIEW_W/2, 278);
   ctx.font = "9px 'Press Start 2P'";
-  ctx.fillText("LAND BESIDE THEM - NOT ON THEM!", W/2, 300);
-  ctx.fillText("GEAR MUST BE DOWN TO TOUCH DOWN", W/2, 318);
+  ctx.fillText("LAND BESIDE THEM - NOT ON THEM!", VIEW_W/2, 300);
+  ctx.fillText("GEAR MUST BE DOWN TO TOUCH DOWN", VIEW_W/2, 318);
   ctx.fillStyle = C.lightRed;
-  ctx.fillText("NEVER REFUEL WITH A FARE ABOARD", W/2, 336);
+  ctx.fillText("NEVER REFUEL WITH A FARE ABOARD", VIEW_W/2, 336);
 
   if (isTouchDevice) {
     ctx.font = "8px 'Press Start 2P'";
     ctx.fillStyle = C.cyan;
-    ctx.fillText("USE THE ON-SCREEN CONTROLS", W/2, 356);
+    ctx.fillText("USE THE ON-SCREEN CONTROLS", VIEW_W/2, 356);
   }
 
   ctx.font = "11px 'Press Start 2P'";
   const blink = Math.sin(Date.now() * 0.005) > 0;
   if (blink) {
     ctx.fillStyle = C.hotYellow;
-    ctx.fillText(actionHint("START"), W/2, 380);
+    ctx.fillText(actionHint("START"), VIEW_W/2, 380);
   }
 
   // The seed makes a run repeatable: open the page with ?seed=<number>
   ctx.font = "7px 'Press Start 2P'";
   ctx.fillStyle = C.darkGrey;
-  ctx.fillText("SEED " + runSeed + (forcedSeed !== null ? " (FIXED)" : ""), W/2, 412);
+  ctx.fillText("SEED " + runSeed + (forcedSeed !== null ? " (FIXED)" : ""), VIEW_W/2, 412);
 
   ctx.font = "8px 'Press Start 2P'";
   ctx.fillStyle = C.grey;
-  ctx.fillText("© 2026 WEB REMAKE", W/2, 460);
+  ctx.fillText("© 2026 WEB REMAKE", VIEW_W/2, 460);
 }
 
 function drawGameOver() {
   ctx.font = "28px 'Press Start 2P'";
   ctx.fillStyle = C.red;
   ctx.textAlign = "center";
-  ctx.fillText("GAME OVER", W/2, H/2 - 30);
+  ctx.fillText("GAME OVER", VIEW_W/2, VIEW_H/2 - 30);
 
   ctx.font = "12px 'Press Start 2P'";
   ctx.fillStyle = C.white;
-  ctx.fillText("FINAL SCORE: " + score, W/2, H/2 + 10);
-  ctx.fillText("FARES DELIVERED: " + totalPassengersDelivered, W/2, H/2 + 35);
+  ctx.fillText("FINAL SCORE: " + score, VIEW_W/2, VIEW_H/2 + 10);
+  ctx.fillText("FARES DELIVERED: " + totalPassengersDelivered, VIEW_W/2, VIEW_H/2 + 35);
 
   const blink = Math.sin(Date.now() * 0.005) > 0;
   if (blink) {
     ctx.font = "10px 'Press Start 2P'";
     ctx.fillStyle = C.hotYellow;
-    ctx.fillText(actionHint("PLAY AGAIN"), W/2, H/2 + 70);
+    ctx.fillText(actionHint("PLAY AGAIN"), VIEW_W/2, VIEW_H/2 + 70);
   }
 }
 
@@ -1590,21 +1620,21 @@ function drawWin() {
   ctx.font = "22px 'Press Start 2P'";
   ctx.fillStyle = C.padGreen;
   ctx.textAlign = "center";
-  ctx.fillText("CONGRATULATIONS!", W/2, H/2 - 50);
+  ctx.fillText("CONGRATULATIONS!", VIEW_W/2, VIEW_H/2 - 50);
 
   ctx.font = "12px 'Press Start 2P'";
   ctx.fillStyle = C.hotYellow;
-  ctx.fillText("ALL LEVELS COMPLETE!", W/2, H/2 - 15);
+  ctx.fillText("ALL LEVELS COMPLETE!", VIEW_W/2, VIEW_H/2 - 15);
 
   ctx.fillStyle = C.white;
-  ctx.fillText("FINAL SCORE: " + score, W/2, H/2 + 15);
-  ctx.fillText("FARES DELIVERED: " + totalPassengersDelivered, W/2, H/2 + 40);
+  ctx.fillText("FINAL SCORE: " + score, VIEW_W/2, VIEW_H/2 + 15);
+  ctx.fillText("FARES DELIVERED: " + totalPassengersDelivered, VIEW_W/2, VIEW_H/2 + 40);
 
   const blink = Math.sin(Date.now() * 0.005) > 0;
   if (blink) {
     ctx.font = "10px 'Press Start 2P'";
     ctx.fillStyle = C.hotYellow;
-    ctx.fillText(actionHint("PLAY AGAIN"), W/2, H/2 + 80);
+    ctx.fillText(actionHint("PLAY AGAIN"), VIEW_W/2, VIEW_H/2 + 80);
   }
 }
 

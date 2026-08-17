@@ -12,13 +12,16 @@ const EXPORTS = `
 Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   LEVELS, initLevel, update, draw, crash, createTaxi, GEAR_LEN, PERSON_WALK, PERSON_HALF_W,
   input, nearLandingSurface, setThrustSound, setThrustHaptics, stopRumble,
+  VIEW_W, VIEW_H, SECTOR_W, SECTOR_H,
+  get $worldW(){return worldW}, get $worldH(){return worldH},
+  get $starField(){return starField},
   sndHeyTaxi, touchdownFeedback, sndFuelWarn, ensureEngine, ensureAudio,
   loadHeyTaxiSample, playHeyTaxiSample, heyTaxiBeeps, unlockAudio,
   HEY_TAXI_MP3_B64,
   get $heyTaxiState(){return heyTaxiState}, set $heyTaxiState(v){heyTaxiState=v},
   get $heyTaxiBuffer(){return heyTaxiBuffer}, set $heyTaxiBuffer(v){heyTaxiBuffer=v},
   get $heyTaxiVoice(){return heyTaxiVoice},
-  refuelViolation, loseLife, layoutCanvas, MAX_BACKING_PIXELS, W, H,
+  refuelViolation, loseLife, layoutCanvas, MAX_BACKING_PIXELS,
   rng, newRunSeed, tryTouchdown, PAD_SNAP, FUEL_SNAP, MAX_LAND_VY,
   get $runSeed(){return runSeed}, set $runSeed(v){runSeed=v},
   get $initCount(){return initCount}, set $initCount(v){initCount=v},
@@ -165,6 +168,24 @@ function clearSpotOn(padIdx) {
   return Math.max(pad.x, Math.min(x, pad.x + pad.w - $taxi.w));
 }
 
+// A synthetic multi-sector level, so camera behaviour can be exercised without
+// changing any of the five shipped levels. Always pop it again afterwards.
+function pushTestLevel(cols, rows) {
+  LEVELS.push({
+    name: "TEST GRID",
+    gravity: 0.04,
+    cols, rows,
+    pads: [
+      { x: 60,                  y: 430,             w: 130, label: "1", color: "#55ff55" },
+      { x: cols * 800 - 200,    y: rows * 500 - 70, w: 130, label: "2", color: "#70a4b2" },
+    ],
+    fares: 1,
+    obstacles: [],
+    fuelStations: [],
+  });
+  return LEVELS.length - 1;
+}
+
 // Park the taxi cleanly on a pad, gear down, no vertical speed.
 function parkOn(padIdx, x) {
   const pad = $pads[padIdx];
@@ -233,6 +254,40 @@ const N = 200000;
 for (let i = 0; i < N; i++) { const v = rng(); lo = Math.min(lo, v); hi = Math.max(hi, v); sum += v; }
 check("rng() stays inside [0,1)", lo >= 0 && hi < 1, `(min=${lo.toFixed(6)}, max=${hi.toFixed(6)})`);
 check("rng() is roughly uniform", Math.abs(sum / N - 0.5) < 0.005, `(mean=${(sum / N).toFixed(5)})`);
+
+console.log("\n=== 1c. Viewport and world are separate concepts ===");
+check("viewport stays a fixed 800x500", VIEW_W === 800 && VIEW_H === 500,
+      `(${VIEW_W}x${VIEW_H})`);
+check("a sector is one viewport", SECTOR_W === VIEW_W && SECTOR_H === VIEW_H);
+for (let li = 0; li < LEVELS.length; li++) {
+  $level = li; $lives = 99; $state = "playing"; initLevel();
+  check(`L${li + 1} is a single sector`,
+        LEVELS[li].cols === 1 && LEVELS[li].rows === 1,
+        `(${LEVELS[li].cols}x${LEVELS[li].rows})`);
+  check(`L${li + 1} world equals one viewport`,
+        $worldW === VIEW_W && $worldH === VIEW_H,
+        `(${$worldW}x${$worldH})`);
+}
+// A multi-sector level must widen the world, not the viewport
+const testIdx = pushTestLevel(3, 2);
+$level = testIdx; $lives = 99; $state = "playing"; initLevel();
+check("a 3x2 level yields a 2400x1000 world", $worldW === 2400 && $worldH === 1000,
+      `(${$worldW}x${$worldH})`);
+check("the viewport is unaffected by world size", VIEW_W === 800 && VIEW_H === 500);
+check("stars are spread across the whole world",
+      $starField.some(s => s.x > VIEW_W) && $starField.some(s => s.y > VIEW_H),
+      `(${$starField.length} stars, max x=${Math.max(...$starField.map(s => s.x)).toFixed(0)})`);
+check("star count scales with world area",
+      $starField.length === 80 * 6, `(${$starField.length}, expected 480)`);
+// The taxi must be free to fly into the extra sectors
+$taxi.x = 2000; $taxi.y = 800; $taxi.vx = 0; $taxi.vy = 0; $taxi.landed = false;
+update();
+check("the taxi is not clamped at the old 800px edge", $taxi.x > 800, `(x=${$taxi.x})`);
+check("the taxi is still clamped at the world edge",
+      (() => { $taxi.x = 5000; update(); return $taxi.x <= $worldW - $taxi.w + 0.001; })(),
+      `(x=${$taxi.x}, worldW=${$worldW})`);
+LEVELS.pop();
+$level = 0; $lives = 99; $state = "playing"; initLevel();
 
 console.log("\n=== 2. Passenger stands within reach on the pad ===");
 let offPad = 0, tooTight = 0;
@@ -624,13 +679,13 @@ function layoutAt(w, h, dpr) {
 const big = layoutAt(2560, 1440, 1);
 check("scales past the old 800x500 cap", big.cssW > 800, `(${big.cssW}x${big.cssH})`);
 check("uses the height on a 16:9 screen", big.cssH <= 1440 && big.cssH > 1200, `(h=${big.cssH})`);
-check("keeps the 8:5 aspect ratio", Math.abs(big.cssW / big.cssH - W / H) < 0.01,
-      `(${(big.cssW / big.cssH).toFixed(3)} vs ${(W / H).toFixed(3)})`);
+check("keeps the 8:5 aspect ratio", Math.abs(big.cssW / big.cssH - VIEW_W / VIEW_H) < 0.01,
+      `(${(big.cssW / big.cssH).toFixed(3)} vs ${(VIEW_W / VIEW_H).toFixed(3)})`);
 
 const ultrawide = layoutAt(3440, 1000, 1);
 check("a short wide window is limited by height", ultrawide.cssH <= 1000 && ultrawide.cssW <= 3440,
       `(${ultrawide.cssW}x${ultrawide.cssH})`);
-check("still 8:5 when width is abundant", Math.abs(ultrawide.cssW / ultrawide.cssH - W / H) < 0.01);
+check("still 8:5 when width is abundant", Math.abs(ultrawide.cssW / ultrawide.cssH - VIEW_W / VIEW_H) < 0.01);
 
 const tall = layoutAt(900, 2000, 1);
 check("a narrow tall window is limited by width", tall.cssW <= 900, `(${tall.cssW}x${tall.cssH})`);
@@ -646,7 +701,7 @@ check("clamps the backing store to the pixel budget",
       retina.bufW * retina.bufH <= MAX_BACKING_PIXELS * 1.01,
       `(${retina.bufW}x${retina.bufH} = ${(retina.bufW * retina.bufH / 1e6).toFixed(1)}MP, budget ${(MAX_BACKING_PIXELS / 1e6).toFixed(1)}MP)`);
 check("backing store still matches the css aspect ratio",
-      Math.abs(retina.bufW / retina.bufH - W / H) < 0.02,
+      Math.abs(retina.bufW / retina.bufH - VIEW_W / VIEW_H) < 0.02,
       `(${(retina.bufW / retina.bufH).toFixed(3)})`);
 
 const modest = layoutAt(1280, 800, 2);
