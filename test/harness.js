@@ -32,6 +32,7 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   get $rumbleTick(){return rumbleTick},
   get $taxi(){return taxi}, set $taxi(v){taxi=v},
   get $passengers(){return passengers},
+  get $messages(){return messages},
   get $particles(){return particles},
   get $pads(){return pads},
   get $state(){return state}, set $state(v){state=v},
@@ -877,6 +878,33 @@ check("an off-screen destination is marked in the destination colour",
       colours.includes(C.hotYellow), `(${JSON.stringify(colours)})`);
 
 LEVELS.pop();
+$level = 0; $lives = 99; $state = "playing"; initLevel();
+
+console.log("\n=== 9l. HEY TAXI is announced twice, then falls silent ===");
+$level = 0; $lives = 99; $state = "playing"; initLevel();
+{
+  // Hover clear of the pad so the fare stays in "waiting" for the whole run
+  const seenShouts = [];
+  const shoutFrames = [];
+  for (let f = 0; f < 1200; f++) {          // 20 seconds
+    $taxi.x = 400; $taxi.y = 100; $taxi.vx = 0; $taxi.vy = 0; $taxi.landed = false;
+    update();
+    for (const m of $messages) {
+      if (m.text === "HEY TAXI!" && !seenShouts.includes(m)) {
+        seenShouts.push(m);
+        shoutFrames.push(f);
+      }
+    }
+  }
+  check("shouts exactly twice in twenty seconds",
+        shoutFrames.length === 2, `(${shoutFrames.length} shouts at ${JSON.stringify(shoutFrames)})`);
+  check("the first shout comes as the fare becomes ready",
+        shoutFrames[0] === 0, `(frame ${shoutFrames[0]})`);
+  check("the second follows five seconds later",
+        shoutFrames[1] - shoutFrames[0] === 300, `(${shoutFrames[1] - shoutFrames[0]} frames apart)`);
+  check("the fare still waits, so silence is not just delivery",
+        $passengers[0].phase === "waiting", `(${$passengers[0].phase})`);
+}
 $level = 0; $lives = 99; $state = "playing"; initLevel();
 
 console.log("\n=== 10. draw() survives every state ===");

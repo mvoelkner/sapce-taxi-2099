@@ -859,6 +859,8 @@ const forcedSeed = (() => {
 const PERSON_HALF_W = 8;   // half the sprite width, used for the crush box
 const PERSON_MARGIN = 16;  // keep the passenger clear of the pad edges
 const PERSON_WALK   = 0.8; // px per 1/60s step while boarding
+const HEY_SHOUTS    = 2;   // calls for a taxi per fare — the first one is free
+const HEY_REPEAT    = 300; // 5s at 60fps between the first shout and the second
 
 function randomFare(padCount) {
   const from = Math.floor(rng() * padCount);
@@ -915,6 +917,7 @@ function initLevel() {
       phase: i === 0 ? "waiting" : "queued",
       active: i === 0,
       heyTimer: 0,
+      heyCount: 0,
       index: i,
     };
   });
@@ -1099,14 +1102,17 @@ function update() {
 
     const pad = pads[p.padIndex];
 
-    // Standing on the pad, waving for a taxi
+    // Standing on the pad, waving for a taxi. Two shouts only: one the moment
+    // the fare is ready, a reminder five seconds later, then silence — an
+    // endless loop wore thin long before the pad was reached.
     if (p.phase === "waiting") {
-      p.heyTimer++;
-      if (p.heyTimer > 150) {
+      if (p.heyCount < HEY_SHOUTS && p.heyTimer >= (p.heyCount === 0 ? 0 : HEY_REPEAT)) {
         addMessage("HEY TAXI!", pad.x + pad.w/2, pad.y - 30, C.hotYellow, 60);
         sndHeyTaxi();
+        p.heyCount++;
         p.heyTimer = 0;
       }
+      p.heyTimer++;
 
       // Land on top of them and they are gone
       if (rectOverlap(
