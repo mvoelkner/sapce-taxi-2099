@@ -14,6 +14,7 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   input, nearLandingSurface, setThrustSound, setThrustHaptics, stopRumble,
   VIEW_W, VIEW_H, SECTOR_W, SECTOR_H,
   updateCamera, centerCameraOnTaxi, CAM_DEAD_W, CAM_DEAD_H,
+  drawEdgeMarkers, edgeMarkerFor, C,
   get $camera(){return camera},
   get $worldW(){return worldW}, get $worldH(){return worldH},
   get $starField(){return starField},
@@ -822,6 +823,58 @@ drawOps.length = 0;
 draw();
 check("stars outside the view are culled",
       starDraws < $starField.length, `(${starDraws} rects vs ${$starField.length} stars)`);
+
+LEVELS.pop();
+$level = 0; $lives = 99; $state = "playing"; initLevel();
+
+console.log("\n=== 9k. Edge markers for off-screen targets ===");
+const edgeIdx = pushTestLevel(3, 2);
+$level = edgeIdx; $lives = 99; $state = "playing"; initLevel();
+$camera.x = 0; $camera.y = 0;
+
+check("a point inside the view gets no marker",
+      edgeMarkerFor(400, 250) === null, "(marker returned for a visible point)");
+
+const right = edgeMarkerFor(2000, 250);
+check("a point to the right yields a marker", right !== null);
+check("the marker sits on the right edge", right && right.x > VIEW_W - 40,
+      `(x=${right && right.x})`);
+check("the marker stays inside the viewport",
+      right && right.x <= VIEW_W && right.y >= 0 && right.y <= VIEW_H,
+      `(${right && right.x},${right && right.y})`);
+
+const below = edgeMarkerFor(400, 900);
+check("a point below yields a marker on the bottom edge",
+      below && below.y > VIEW_H - 40, `(y=${below && below.y})`);
+
+const corner = edgeMarkerFor(2400, 1000);
+check("a diagonal target is clamped to a corner",
+      corner && corner.x > VIEW_W - 40 && corner.y > VIEW_H - 40,
+      `(${corner && corner.x},${corner && corner.y})`);
+
+// Two distinguishable colours: pickup while empty, destination while carrying.
+// The markers blink, so the timer has to sit in a visible phase.
+for (let i = 0; i < 10; i++) update();
+$camera.x = 0; $camera.y = 0;
+
+const colours = [];
+Object.defineProperty(ctxStub, "fillStyle", {
+  set(v) { colours.push(v); }, get() { return ""; }, configurable: true,
+});
+$taxi.hasPassenger = false;
+$passengers[0].phase = "waiting";
+$passengers[0].padIndex = 1;              // pad 2 lies in a far sector
+colours.length = 0;
+drawEdgeMarkers();
+check("an off-screen pickup pad is marked in the pickup colour",
+      colours.includes(C.padGreen), `(${JSON.stringify(colours)})`);
+
+$taxi.hasPassenger = true;
+$taxi.passengerDest = 1;
+colours.length = 0;
+drawEdgeMarkers();
+check("an off-screen destination is marked in the destination colour",
+      colours.includes(C.hotYellow), `(${JSON.stringify(colours)})`);
 
 LEVELS.pop();
 $level = 0; $lives = 99; $state = "playing"; initLevel();

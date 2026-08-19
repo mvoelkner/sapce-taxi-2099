@@ -1378,6 +1378,8 @@ function draw() {
 
   ctx.restore();   // back to screen space for HUD and overlays
 
+  drawEdgeMarkers();
+
   // HUD
   drawHUD();
 
@@ -1518,6 +1520,52 @@ function drawStars() {
     ctx.fillRect(s.x, s.y, s.s, s.s);
   }
   ctx.globalAlpha = 1;
+}
+
+// ── Off-screen target markers ───────────────────────────────
+// The pad's own blinking arrow is invisible once the pad leaves the view, which
+// would make the empty legs of a random route a blind search. These markers sit
+// on the viewport edge and point at the target. Screen space, so they must be
+// drawn after the camera transform is popped.
+const EDGE_MARGIN = 18;
+
+function edgeMarkerFor(worldX, worldY) {
+  const sx = worldX - camera.x;
+  const sy = worldY - camera.y;
+  if (sx >= 0 && sx <= VIEW_W && sy >= 0 && sy <= VIEW_H) return null;
+  return {
+    x: Math.max(EDGE_MARGIN, Math.min(sx, VIEW_W - EDGE_MARGIN)),
+    y: Math.max(EDGE_MARGIN, Math.min(sy, VIEW_H - EDGE_MARGIN)),
+    angle: Math.atan2(sy - VIEW_H/2, sx - VIEW_W/2),
+  };
+}
+
+function drawEdgeMarker(pad, color) {
+  const m = edgeMarkerFor(pad.x + pad.w/2, pad.y);
+  if (!m) return;
+  ctx.save();
+  ctx.translate(m.x, m.y);
+  ctx.rotate(m.angle);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(10, 0);
+  ctx.lineTo(-6, -7);
+  ctx.lineTo(-6, 7);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawEdgeMarkers() {
+  if (!pads || !pads.length || !taxi) return;
+  const blink = Math.sin(levelTimer * 0.15) > 0;
+  if (!blink) return;
+  if (taxi.hasPassenger) {
+    if (pads[taxi.passengerDest]) drawEdgeMarker(pads[taxi.passengerDest], C.hotYellow);
+    return;
+  }
+  const fare = passengers.find(p => p.phase === "waiting" || p.phase === "boarding");
+  if (fare && pads[fare.padIndex]) drawEdgeMarker(pads[fare.padIndex], C.padGreen);
 }
 
 function drawHUD() {
