@@ -16,6 +16,7 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   updateCamera, centerCameraOnTaxi, CAM_DEAD_W, CAM_DEAD_H,
   drawEdgeMarkers, edgeMarkerFor, C,
   showExplosion, hideExplosion, sndExplosion, primeExplosionSound,
+  farePolicy,
   get $explosionPrimed(){return explosionPrimed}, set $explosionPrimed(v){explosionPrimed=v},
   get $viewScale(){return viewScale}, set $viewScale(v){viewScale=v},
   get $camera(){return camera},
@@ -205,19 +206,20 @@ function clearSpotOn(padIdx) {
 
 // A synthetic multi-sector level, so camera behaviour can be exercised without
 // changing any of the five shipped levels. Always pop it again afterwards.
-function pushTestLevel(cols, rows) {
-  LEVELS.push({
+function pushTestLevel(cols, rows, extra) {
+  LEVELS.push(Object.assign({
     name: "TEST GRID",
     gravity: 0.04,
     cols, rows,
     pads: [
       { x: 60,                  y: 430,             w: 130, label: "1", color: "#55ff55" },
       { x: cols * 800 - 200,    y: rows * 500 - 70, w: 130, label: "2", color: "#70a4b2" },
+      { x: 400,                 y: 300,             w: 130, label: "3", color: "#ffcc55" },
     ],
     fares: 1,
     obstacles: [],
     fuelStations: [],
-  });
+  }, extra || {}));
   return LEVELS.length - 1;
 }
 
@@ -1016,6 +1018,103 @@ console.log("\n=== 9m. Explosion overlay and sound ===");
   primeExplosionSound();
   check("priming happens only once",
         explosionSoundStub.plays === primedPlays, `(${explosionSoundStub.plays} vs ${primedPlays})`);
+}
+$level = 0; $lives = 99; $state = "playing"; initLevel();
+
+console.log("\n=== 9n. Fare board ===");
+{
+  const live = () => $passengers.filter(p =>
+    p.phase === "waiting" || p.phase === "boarding").length;
+  const phases = () => $passengers.map(p => p.phase).join(",");
+
+  // ── Single player must come out of this untouched ──
+  $level = 0; $lives = 99; $state = "playing"; initLevel();
+  check("single player still starts with exactly one fare",
+        live() === 1, `(${phases()})`);
+  check("the default policy is one fare, refilled after delivery, without delay",
+        farePolicy(LEVELS[0]).activeFares === 1 &&
+        farePolicy(LEVELS[0]).refillOn === "delivered" &&
+        farePolicy(LEVELS[0]).refillDelay === 0,
+        `(${JSON.stringify(farePolicy(LEVELS[0]))})`);
+
+  // Board the first fare; single player must NOT put a second one out yet
+  const first = $passengers[0];
+  parkOn(first.padIndex, clearSpotOn(first.padIndex));
+  for (let i = 0; i < 200 && first.phase !== "aboard"; i++) update();
+  check("the first fare boards", first.phase === "aboard", `(${first.phase})`);
+  check("single player puts out no second fare while one is aboard",
+        live() === 0, `(${phases()})`);
+
+  // ── The economy level ──
+  const ecoIdx = pushTestLevel(2, 2, {
+    fares: 3, activeFares: 3, refillOn: "aboard", refillDelay: 60,
+  });
+  $level = ecoIdx; $lives = 99; $state = "playing"; initLevel();
+
+  check("an economy level puts its whole base count out at once",
+        live() === 3, `(${phases()})`);
+  check("the board fills without waiting out the refill delay",
+        $passengers.filter(p => p.phase === "queued").length === 0, `(${phases()})`);
+
+  // Pick one up and watch the slot refill
+  const rider = $passengers.find(p => p.phase === "waiting");
+  parkOn(rider.padIndex, clearSpotOn(rider.padIndex));
+  for (let i = 0; i < 200 && rider.phase !== "aboard"; i++) update();
+  check("a fare can be picked up on an economy level",
+        rider.phase === "aboard", `(${rider.phase})`);
+
+  const beforeRefill = live();
+  for (let i = 0; i < 55; i++) update();
+  check("the replacement does not appear before the delay is up",
+        live() === beforeRefill, `(${live()} live after 55 frames, was ${beforeRefill})`);
+  for (let i = 0; i < 20; i++) update();
+  check("the replacement appears once the delay is up",
+        live() === beforeRefill + 1, `(${live()} live, was ${beforeRefill})`);
+
+  // ── The supply must not run dry ──
+  const poolBefore = $passengers.length;
+  check("the pool grew past the level's own fare count",
+        poolBefore > 3, `(${poolBefore} fares from a pool of 3)`);
+  check("an economy level does not report levelComplete",
+        $state === "playing", `(${$state})`);
+
+  // ── One taxi carries one fare: two on a pad, only one boards ──
+  $level = ecoIdx; $lives = 99; $state = "playing"; initLevel();
+  const shared = $pads[2];
+  const [a, b] = $passengers.filter(p => p.phase === "waiting").slice(0, 2);
+  a.padIndex = 2; b.padIndex = 2;
+  a.x = shared.x + 20;
+  b.x = shared.x + shared.w - 20;
+  parkOn(2, shared.x + shared.w/2 - $taxi.w/2);
+  update();
+  const boarding = [a, b].filter(p => p.phase === "boarding");
+  check("only one of two fares on a pad starts boarding",
+        boarding.length === 1, `(${a.phase}/${b.phase})`);
+  check("the taxi records which fare claimed it",
+        $taxi.fareClaim === boarding[0].index, `(${$taxi.fareClaim} vs ${boarding[0].index})`);
+
+  for (let i = 0; i < 200 && boarding[0].phase !== "aboard"; i++) update();
+  check("the claimed fare boards and the other stays put",
+        boarding[0].phase === "aboard" &&
+        [a, b].filter(p => p.phase === "waiting").length === 1,
+        `(${a.phase}/${b.phase})`);
+  check("boarding releases the claim",
+        $taxi.fareClaim === -1, `(${$taxi.fareClaim})`);
+
+  // ── Flying off mid-boarding hands the claim back ──
+  $level = ecoIdx; $lives = 99; $state = "playing"; initLevel();
+  const solo = $passengers.find(p => p.phase === "waiting");
+  parkOn(solo.padIndex, clearSpotOn(solo.padIndex));
+  update();
+  check("landing beside a fare claims the taxi",
+        $taxi.fareClaim === solo.index, `(${$taxi.fareClaim})`);
+  $taxi.landed = false; $taxi.landedPad = -1; $taxi.y -= 40;
+  update();
+  check("leaving the pad releases the claim",
+        $taxi.fareClaim === -1 && solo.phase === "waiting",
+        `(claim=${$taxi.fareClaim}, phase=${solo.phase})`);
+
+  LEVELS.pop();
 }
 $level = 0; $lives = 99; $state = "playing"; initLevel();
 

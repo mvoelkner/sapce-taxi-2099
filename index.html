@@ -719,6 +719,7 @@ let score = 0;
 let lives = 3;
 let taxi, passengers, pads, obstacles, particles, messages;
 let levelTimer;
+let fareRefillTimer = 0;   // frames a free slot has been waiting for its refill
 let totalPassengersDelivered;
 let crashReason = "CRASHED!";
 
@@ -846,6 +847,7 @@ function createTaxi() {
     landedPad: -1,
     hasPassenger: false,
     passengerDest: -1,
+    fareClaim: -1,    // index of the fare walking towards this taxi, or -1
     thrustUp: false,
     thrustLeft: false,
     thrustRight: false,
@@ -947,6 +949,96 @@ const PERSON_WALK   = 0.8; // px per 1/60s step while boarding
 const HEY_SHOUTS    = 2;   // calls for a taxi per fare — the first one is free
 const HEY_REPEAT    = 300; // 5s at 60fps between the first shout and the second
 
+// ── Fare board ──────────────────────────────────────────────
+// Single player releases one fare at a time and the next only after the
+// previous has been dropped off. The multiplayer economy needs several standing
+// at once and a replacement as soon as one is picked up — without a base supply
+// eight of ten players lose every race, and whoever comes second three times
+// running stops playing.
+//
+// Both are the same rule with different numbers, so the level carries the
+// policy. The defaults reproduce single player exactly, which is why the five
+// existing levels declare none of these fields.
+const FARE_POLICY_DEFAULTS = {
+  activeFares: 1,            // how many fares may stand on the board at once
+  refillOn: "delivered",     // when a fare frees its slot: "delivered" | "aboard"
+  refillDelay: 0,            // frames between a slot falling free and the refill
+};
+
+function farePolicy(lvl) {
+  return {
+    activeFares: lvl.activeFares || FARE_POLICY_DEFAULTS.activeFares,
+    refillOn:    lvl.refillOn    || FARE_POLICY_DEFAULTS.refillOn,
+    refillDelay: lvl.refillDelay === undefined
+                   ? FARE_POLICY_DEFAULTS.refillDelay : lvl.refillDelay,
+  };
+}
+
+// A fare holds its slot until it reaches the state that frees one
+function occupiesSlot(p, refillOn) {
+  if (p.phase === "queued" || p.phase === "delivered") return false;
+  return refillOn === "aboard" ? p.phase !== "aboard" : true;
+}
+
+function makeFare(i, padCount) {
+  return {
+    ...randomFare(padCount),
+    x: 0,
+    // queued -> waiting -> boarding (walking to the taxi) -> aboard -> delivered
+    phase: "queued",
+    active: false,
+    heyTimer: 0,
+    heyCount: 0,
+    index: i,
+  };
+}
+
+function activateFare(p) {
+  p.phase = "waiting";
+  p.active = true;
+  p.heyTimer = 0;
+  p.heyCount = 0;
+  p.x = passengerStandX(pads[p.padIndex], taxi.landed && taxi.landedPad === p.padIndex);
+}
+
+// The next fare to put out. A fixed pool runs dry and the level ends; an economy
+// tops itself up, because a running economy has no last fare.
+function nextQueuedFare(pol) {
+  const queued = passengers.find(p => p.phase === "queued");
+  if (queued) return queued;
+  if (pol.refillOn !== "aboard") return null;
+  const fresh = makeFare(passengers.length, pads.length);
+  passengers.push(fresh);
+  return fresh;
+}
+
+// Put the base supply out at level start, all at once — the refill delay paces
+// replacements during play, it should not make the opening trickle in.
+function fillFareBoard() {
+  const pol = farePolicy(LEVELS[level]);
+  for (let guard = 0; guard < pol.activeFares; guard++) {
+    let liveCount = 0;
+    for (const p of passengers) if (occupiesSlot(p, pol.refillOn)) liveCount++;
+    if (liveCount >= pol.activeFares) break;
+    const next = nextQueuedFare(pol);
+    if (!next) break;
+    activateFare(next);
+  }
+  fareRefillTimer = 0;
+}
+
+function updateFareBoard() {
+  const pol = farePolicy(LEVELS[level]);
+  let liveCount = 0;
+  for (const p of passengers) if (occupiesSlot(p, pol.refillOn)) liveCount++;
+  if (liveCount >= pol.activeFares) { fareRefillTimer = 0; return; }
+  if (fareRefillTimer < pol.refillDelay) { fareRefillTimer++; return; }
+  const next = nextQueuedFare(pol);
+  if (!next) return;
+  activateFare(next);
+  fareRefillTimer = 0;
+}
+
 function randomFare(padCount) {
   const from = Math.floor(rng() * padCount);
   let to = Math.floor(rng() * (padCount - 1));
@@ -992,20 +1084,10 @@ function initLevel() {
 
   taxi = createTaxi();
   pads = lvl.pads.map(p => ({ ...p }));
-  passengers = Array.from({ length: lvl.fares }, (_, i) => {
-    const fare = randomFare(pads.length);
-    return {
-      ...fare,
-      // Only the first fare is placed now; the rest are placed on activation.
-      x: i === 0 ? passengerStandX(pads[fare.padIndex], false) : 0,
-      // waiting -> boarding (walking to the taxi) -> aboard -> delivered
-      phase: i === 0 ? "waiting" : "queued",
-      active: i === 0,
-      heyTimer: 0,
-      heyCount: 0,
-      index: i,
-    };
-  });
+  // Every fare starts queued; fillFareBoard puts out as many as the policy
+  // allows, so the placement roll happens at activation time for all of them.
+  passengers = Array.from({ length: lvl.fares }, (_, i) => makeFare(i, pads.length));
+  fillFareBoard();
   obstacles = lvl.obstacles.map(o => ({ ...o }));
   particles = [];
   messages = [];
@@ -1172,19 +1254,12 @@ function update() {
   }
 
   // ─ Passenger logic ─
+  updateFareBoard();
+
   for (const p of passengers) {
     if (p.phase === "delivered") continue;
 
-    // Release the next fare once the previous one has been dropped off
-    if (p.phase === "queued") {
-      const prevDelivered = p.index === 0 || passengers[p.index - 1].phase === "delivered";
-      if (prevDelivered) {
-        p.phase = "waiting";
-        p.active = true;
-        p.x = passengerStandX(pads[p.padIndex],
-                              taxi.landed && taxi.landedPad === p.padIndex);
-      }
-    }
+    if (p.phase === "queued") continue;   // the fare board decides when it is put out
 
     const pad = pads[p.padIndex];
 
@@ -1208,9 +1283,14 @@ function update() {
         return;
       }
 
-      // Landed safely beside them — they start walking over
-      if (taxi.landed && taxi.landedPad === p.padIndex && !taxi.hasPassenger) {
+      // Landed safely beside them — they start walking over. With several fares
+      // on one pad the first to reach the taxi claims it; the rest keep waiting
+      // rather than all piling into the same cab. This is the local shape of the
+      // server's first-come-first-served rule.
+      if (taxi.landed && taxi.landedPad === p.padIndex &&
+          !taxi.hasPassenger && taxi.fareClaim === -1) {
         p.phase = "boarding";
+        taxi.fareClaim = p.index;
       }
     }
 
@@ -1220,6 +1300,7 @@ function update() {
       if (!taxi.landed || taxi.landedPad !== p.padIndex || taxi.hasPassenger) {
         p.phase = "waiting";
         p.heyTimer = 0;
+        if (taxi.fareClaim === p.index) taxi.fareClaim = -1;
       } else {
         const door = taxi.x + taxi.w/2;
         const dx = door - p.x;
@@ -1229,6 +1310,7 @@ function update() {
           p.phase = "aboard";
           taxi.hasPassenger = true;
           taxi.passengerDest = p.destPadIndex;
+          taxi.fareClaim = -1;        // hasPassenger guards the seat from here on
           sndPickup();
           const destPad = pads[p.destPadIndex];
           addMessage("TO PAD " + destPad.label + "!", taxi.x + taxi.w/2, taxi.y - 20, C.padGreen, 90);
@@ -1252,7 +1334,10 @@ function update() {
   }
 
   // ─ Check level complete ─
-  if (passengers.every(p => p.phase === "delivered")) {
+  // A fixed pool can be worked through; an economy tops itself up and therefore
+  // has no last fare, so it never ends this way.
+  if (farePolicy(LEVELS[level]).refillOn !== "aboard" &&
+      passengers.every(p => p.phase === "delivered")) {
     state = "levelComplete";
     sndLevelUp();
     score += 100; // level bonus
