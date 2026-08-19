@@ -773,6 +773,59 @@ check("the simulation is unaffected by camera position",
 LEVELS.pop();
 $level = 0; $lives = 99; $state = "playing"; initLevel();
 
+console.log("\n=== 9j. HUD is screen space, world is not ===");
+// Record what the renderer emits, tracking the active transform
+const drawOps = [];
+ctxStub.save = () => drawOps.push({ op: "save" });
+ctxStub.restore = () => drawOps.push({ op: "restore" });
+ctxStub.translate = (x, y) => drawOps.push({ op: "translate", x, y });
+ctxStub.fillText = (t, x, y) => drawOps.push({ op: "text", t, x, y });
+
+const drawIdx = pushTestLevel(3, 2);
+$level = drawIdx; $lives = 99; $state = "playing"; initLevel();
+$taxi.x = 1200; $taxi.y = 500; $taxi.landed = false;
+centerCameraOnTaxi();
+drawOps.length = 0;
+draw();
+
+const translates = drawOps.filter(o => o.op === "translate");
+check("the world is drawn under a camera translation",
+      translates.some(t => t.x === -$camera.x && t.y === -$camera.y),
+      `(${JSON.stringify(translates)})`);
+check("the translation is balanced by save/restore",
+      drawOps.filter(o => o.op === "save").length ===
+      drawOps.filter(o => o.op === "restore").length,
+      `(${drawOps.filter(o => o.op === "save").length} save / ${drawOps.filter(o => o.op === "restore").length} restore)`);
+
+// The HUD must be emitted after the restore, i.e. in screen space
+const lastRestore = drawOps.map(o => o.op).lastIndexOf("restore");
+const scoreOp = drawOps.findIndex(o => o.op === "text" && String(o.t).startsWith("SCORE"));
+check("the HUD is drawn after the camera transform is popped",
+      scoreOp > lastRestore, `(score at ${scoreOp}, last restore at ${lastRestore})`);
+
+// And its coordinates must not move when the camera does
+const scoreAt = camX => {
+  $camera.x = camX; drawOps.length = 0; draw();
+  return drawOps.find(o => o.op === "text" && String(o.t).startsWith("SCORE"));
+};
+const hudA = scoreAt(0);
+const hudB = scoreAt(900);
+check("HUD coordinates are independent of the camera",
+      hudA && hudB && hudA.x === hudB.x && hudA.y === hudB.y,
+      `(${hudA && hudA.x} vs ${hudB && hudB.x})`);
+
+// Off-screen stars must be skipped
+$camera.x = 0; $camera.y = 0;
+let starDraws = 0;
+ctxStub.fillRect = () => starDraws++;
+drawOps.length = 0;
+draw();
+check("stars outside the view are culled",
+      starDraws < $starField.length, `(${starDraws} rects vs ${$starField.length} stars)`);
+
+LEVELS.pop();
+$level = 0; $lives = 99; $state = "playing"; initLevel();
+
 console.log("\n=== 10. draw() survives every state ===");
 for (const s of ["title", "playing", "crashed", "levelComplete", "gameOver", "win"]) {
   $state = s;
