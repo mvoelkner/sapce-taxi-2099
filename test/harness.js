@@ -15,6 +15,9 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   VIEW_W, VIEW_H, SECTOR_W, SECTOR_H,
   updateCamera, centerCameraOnTaxi, CAM_DEAD_W, CAM_DEAD_H,
   drawEdgeMarkers, edgeMarkerFor, C,
+  showExplosion, hideExplosion, sndExplosion, primeExplosionSound,
+  get $explosionPrimed(){return explosionPrimed}, set $explosionPrimed(v){explosionPrimed=v},
+  get $viewScale(){return viewScale}, set $viewScale(v){viewScale=v},
   get $camera(){return camera},
   get $worldW(){return worldW}, get $worldH(){return worldH},
   get $starField(){return starField},
@@ -55,8 +58,36 @@ const ctxStub = new Proxy({}, {
 const canvasStub = { width: 800, height: 500, style: {}, getContext: () => ctxStub };
 const elStub = { classList: { toggle: noop }, hidden: false, addEventListener: noop, dataset: {} };
 
+// The explosion overlay is a real DOM element, so it needs a classList that
+// remembers and a style object that records what was written to it.
+function classListStub() {
+  const set = new Set();
+  return {
+    add: c => set.add(c),
+    remove: c => set.delete(c),
+    contains: c => set.has(c),
+    toggle: (c, on) => { if (on) set.add(c); else set.delete(c); },
+  };
+}
+const explosionStub = {
+  classList: classListStub(), style: {}, offsetWidth: 130,
+  addEventListener: noop, dataset: {},
+};
+// A thenable that settles at once, so prime/play paths run to completion here
+const settled = { then: (ok) => { if (ok) ok(); return settled; }, catch: () => settled };
+const explosionSoundStub = {
+  muted: false, currentTime: 0, paused: true, plays: 0, pauses: 0,
+  play() { this.plays++; this.paused = false; return settled; },
+  pause() { this.pauses++; this.paused = true; },
+  addEventListener: noop,
+};
+
 globalThis.document = {
-  getElementById: id => (id === "game" ? canvasStub : { ...elStub }),
+  getElementById: id =>
+    id === "game" ? canvasStub :
+    id === "explosion" ? explosionStub :
+    id === "explosion-sound" ? explosionSoundStub :
+    { ...elStub },
   querySelectorAll: () => [],
   addEventListener: noop,
   documentElement: { classList: { toggle: noop } },
@@ -904,6 +935,87 @@ $level = 0; $lives = 99; $state = "playing"; initLevel();
         shoutFrames[1] - shoutFrames[0] === 300, `(${shoutFrames[1] - shoutFrames[0]} frames apart)`);
   check("the fare still waits, so silence is not just delivery",
         $passengers[0].phase === "waiting", `(${$passengers[0].phase})`);
+}
+$level = 0; $lives = 99; $state = "playing"; initLevel();
+
+console.log("\n=== 9m. Explosion overlay and sound ===");
+{
+  // The taxi body is a rect of exactly (w-4) x (h-6) at (x+2, y+4) — nothing
+  // else the renderer emits has those dimensions, so it identifies the taxi.
+  const rects = [];
+  ctxStub.fillRect = (x, y, w, h) => rects.push({ x, y, w, h });
+  const taxiDrawn = () => rects.some(r =>
+    r.x === $taxi.x + 2 && r.y === $taxi.y + 4 &&
+    r.w === $taxi.w - 4 && r.h === $taxi.h - 6);
+
+  $level = 0; $lives = 99; $state = "playing"; initLevel();
+  $viewScale = 1;
+  $camera.x = 0; $camera.y = 0;
+  $taxi.x = 300; $taxi.y = 200;
+
+  rects.length = 0; draw();
+  check("the taxi is drawn while playing", taxiDrawn(), "(no taxi body rect)");
+
+  check("the overlay is hidden before any crash",
+        !explosionStub.classList.contains("explosion--active"));
+
+  explosionSoundStub.plays = 0;
+  crash("TEST CRASH");
+
+  check("crashing plays explosion.mp3",
+        explosionSoundStub.plays === 1, `(${explosionSoundStub.plays} plays)`);
+  check("crashing rewinds the sample so a second crash is heard",
+        explosionSoundStub.currentTime === 0, `(${explosionSoundStub.currentTime})`);
+  check("crashing shows the explosion overlay",
+        explosionStub.classList.contains("explosion--active"));
+  check("the overlay centre sits on the taxi",
+        explosionStub.style.left === (300 + $taxi.w/2) + "px" &&
+        explosionStub.style.top  === (200 + $taxi.h/2) + "px",
+        `(${explosionStub.style.left},${explosionStub.style.top})`);
+
+  rects.length = 0; draw();
+  check("the taxi is gone once it has exploded", !taxiDrawn(), "(taxi body still drawn)");
+
+  // A scaled-down window and a panned camera must both move the overlay
+  $viewScale = 0.5;
+  $camera.x = 100; $camera.y = 40;
+  showExplosion(300, 200);
+  check("the overlay follows camera and scale",
+        explosionStub.style.left === ((300 - 100) * 0.5) + "px" &&
+        explosionStub.style.top  === ((200 - 40) * 0.5) + "px",
+        `(${explosionStub.style.left},${explosionStub.style.top})`);
+
+  // Restarting the level has to clear it, or the wreck hangs over the new one
+  $viewScale = 1;
+  $level = 0; $lives = 99; $state = "playing"; initLevel();
+  check("restarting the level hides the overlay",
+        !explosionStub.classList.contains("explosion--active"));
+
+  // Refuelling with a fare costs a life but is explicitly not a wreck
+  explosionSoundStub.plays = 0;
+  refuelViolation();
+  check("refuelling with a fare aboard raises no explosion",
+        explosionSoundStub.plays === 0 &&
+        !explosionStub.classList.contains("explosion--active"),
+        `(${explosionSoundStub.plays} plays)`);
+
+  // The iOS unlock has to leave the element silent and rewound. An earlier
+  // section already unlocked audio, so the guard has to be reset to test it.
+  $explosionPrimed = false;
+  explosionSoundStub.plays = 0;
+  explosionSoundStub.paused = false;
+  explosionSoundStub.muted = false;
+  primeExplosionSound();
+  check("priming plays the sample once to satisfy the iOS gesture rule",
+        explosionSoundStub.plays === 1, `(${explosionSoundStub.plays} plays)`);
+  check("priming leaves the sample paused, rewound and audible",
+        explosionSoundStub.paused && explosionSoundStub.currentTime === 0 &&
+        explosionSoundStub.muted === false,
+        `(paused=${explosionSoundStub.paused}, t=${explosionSoundStub.currentTime}, muted=${explosionSoundStub.muted})`);
+  const primedPlays = explosionSoundStub.plays;
+  primeExplosionSound();
+  check("priming happens only once",
+        explosionSoundStub.plays === primedPlays, `(${explosionSoundStub.plays} vs ${primedPlays})`);
 }
 $level = 0; $lives = 99; $state = "playing"; initLevel();
 

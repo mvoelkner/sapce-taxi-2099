@@ -182,12 +182,45 @@
     .rotate-gate__icon { animation: none; }
     .touch-controls__btn { transition: none; }
   }
+
+  /* ── Explosion ────────────────────────────────────────────── */
+  /* A sprite strip, so it is a DOM layer over the canvas rather than a canvas
+     draw. JS puts its centre on the taxi, hence the negative margin: the left
+     and top it sets are the centre point, not the corner.
+     explosion3.png is 1252x126 and holds ten equal frames of 125.2px. Scaling
+     the strip to 1300px makes each frame exactly the 130px of the box, so no
+     sliver of the neighbouring frame bleeds in. */
+
+  .explosion {
+    position: absolute;
+    z-index: 100;
+    display: none;
+    width: 130px;
+    height: 130px;
+    margin: -65px 0 0 -65px;
+    background-image: url(explosion3.png);
+    background-repeat: no-repeat;
+    background-size: 1300px auto;
+    background-position: 1000px 1000px;
+    pointer-events: none;
+  }
+
+  .explosion--active {
+    display: block;
+    animation: explosion 0.8s steps(11, jump-none) 1;
+  }
+
+  @keyframes explosion {
+    from { background-position: 0 0; }
+    to   { background-position: -1300px 0; }
+  }
 </style>
 </head>
 <body>
 
 <div id="game-wrapper">
   <canvas id="game" width="800" height="500"></canvas>
+  <div class="explosion" id="explosion"></div>
 </div>
 <div id="instructions">
   ARROW KEYS: THRUST &amp; STEER &nbsp;|&nbsp; SPACE: START/CONTINUE<br>
@@ -212,6 +245,8 @@
   <p class="rotate-gate__text">PLEASE ROTATE<br>YOUR DEVICE</p>
 </div>
 
+<audio id="explosion-sound" src="explosion.mp3" preload="auto"></audio>
+
 <script>
 // ============================================================
 //  SPACE TAXI — Web Remake of the 1984 Commodore 64 Classic
@@ -221,6 +256,12 @@
 
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
+const explosionEl = document.getElementById("explosion");
+const explosionSound = document.getElementById("explosion-sound");
+
+// CSS pixels per world unit. Only DOM overlays need it; the canvas itself is
+// scaled by the ctx transform. layoutCanvas keeps it current.
+let viewScale = 1;
 
 // World coordinates are FIXED. The canvas backing store is resized to the
 // device's real pixel resolution, but every level coordinate, HUD position and
@@ -428,6 +469,47 @@ function sndHeyTaxi() {
   vibrate([25, 50, 25]);
 }
 
+// ── Explosion sample ────────────────────────────────────────
+// A plain <audio> element, unlike "HEY TAXI!" which is embedded base64 and goes
+// through the AudioContext. 40 KB would be 53 KB of base64 in this file, and a
+// media element loads happily under file:// where fetch() trips over CORS. The
+// price is iOS: an audio element needs its own gesture-initiated play() before
+// it will ever sound, and a crash is not a gesture. primeExplosionSound() pays
+// that price on the first touch, muted, so the real one is not the first.
+let explosionPrimed = false;
+
+function primeExplosionSound() {
+  if (explosionPrimed || !explosionSound) return;
+  explosionPrimed = true;
+  try {
+    explosionSound.muted = true;
+    const p = explosionSound.play();
+    const settle = () => {
+      try {
+        explosionSound.pause();
+        explosionSound.currentTime = 0;
+        explosionSound.muted = false;
+      } catch (e) {}
+    };
+    if (p && p.then) p.then(settle, settle); else settle();
+  } catch (e) {
+    try { explosionSound.muted = false; } catch (e2) {}
+  }
+}
+
+function sndExplosion() {
+  if (!explosionSound) return false;
+  try {
+    explosionSound.muted = false;
+    explosionSound.currentTime = 0;
+    const p = explosionSound.play();
+    if (p && p.catch) p.catch(() => {});
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 // ── Platform (audio unlock, fullscreen, haptics) ────────────
 function unlockAudio() {
   try {
@@ -435,6 +517,7 @@ function unlockAudio() {
     if (audioCtx.state === "suspended") audioCtx.resume();
     // Decode here, in a real gesture, so the first shout is never a beep
     loadHeyTaxiSample();
+    primeExplosionSound();
   } catch (e) {}
 }
 function setAudioSuspended(suspend) {
@@ -517,6 +600,8 @@ function layoutCanvas() {
 
   canvas.style.width  = cssW + "px";
   canvas.style.height = cssH + "px";
+  // DOM overlays sit in CSS pixels while the game thinks in world units
+  viewScale = cssW / VIEW_W;
   canvas.width  = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
 
@@ -926,6 +1011,7 @@ function initLevel() {
   messages = [];
   levelTimer = 0;
   state = "playing";
+  hideExplosion();
   // Placed relative to the taxi, not the world centre: in a multi-sector world
   // the centre can sit far outside the view.
   addMessage(lvl.name, taxi.x + taxi.w/2, taxi.y + 90, C.skyBlue, 120);
@@ -1188,9 +1274,31 @@ function loseLife(reason) {
   state = lives <= 0 ? "gameOver" : "crashed";
 }
 
+// ── Explosion overlay ───────────────────────────────────────
+// The taxi itself needs no hiding: draw() only paints it in "playing" and
+// "levelComplete", and a crash leaves neither state standing.
+function showExplosion(worldX, worldY) {
+  if (!explosionEl) return;
+  // World -> viewport -> CSS pixels. The CSS negative margin turns this centre
+  // point into the box corner, so the blast sits on the taxi and not beside it.
+  explosionEl.style.left = ((worldX - camera.x) * viewScale) + "px";
+  explosionEl.style.top  = ((worldY - camera.y) * viewScale) + "px";
+  // A CSS animation only runs on the transition into the class. Dropping it and
+  // reading offsetWidth forces the reflow that lets the next crash replay it.
+  explosionEl.classList.remove("explosion--active");
+  void explosionEl.offsetWidth;
+  explosionEl.classList.add("explosion--active");
+}
+
+function hideExplosion() {
+  if (!explosionEl) return;
+  explosionEl.classList.remove("explosion--active");
+}
+
 function crash(reason = "CRASHED!") {
   spawnExplosion(taxi.x + taxi.w/2, taxi.y + taxi.h/2);
-  sndCrash();
+  showExplosion(taxi.x + taxi.w/2, taxi.y + taxi.h/2);
+  if (!sndExplosion()) sndCrash();
   vibrate([60, 40, 120]);
   loseLife(reason);
 }
