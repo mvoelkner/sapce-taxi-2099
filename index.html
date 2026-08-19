@@ -926,6 +926,7 @@ function initLevel() {
   // Placed relative to the taxi, not the world centre: in a multi-sector world
   // the centre can sit far outside the view.
   addMessage(lvl.name, taxi.x + taxi.w/2, taxi.y + 90, C.skyBlue, 120);
+  centerCameraOnTaxi();   // no pan on the first frame of a level
 }
 
 // ── Touchdown ───────────────────────────────────────────────
@@ -1213,6 +1214,47 @@ function updateMessages() {
     messages[i].life--;
     if (messages[i].life <= 0) messages.splice(i, 1);
   }
+}
+
+// ── Camera ──────────────────────────────────────────────────
+// Presentation only: driven from gameLoop, never from update(), and no
+// simulation value may depend on it.
+//
+// The dead zone matters for feel, not for looks. A camera that rigidly centres
+// the taxi keeps the world moving while the player is trying to hold still for
+// a landing, which makes the core mechanic harder. Inside the dead zone the
+// view stays put.
+const CAM_DEAD_W = 240;
+const CAM_DEAD_H = 160;
+const camera = { x: 0, y: 0 };
+
+function clampCamera() {
+  camera.x = Math.max(0, Math.min(camera.x, Math.max(0, worldW - VIEW_W)));
+  camera.y = Math.max(0, Math.min(camera.y, Math.max(0, worldH - VIEW_H)));
+}
+
+function centerCameraOnTaxi() {
+  if (!taxi) { camera.x = 0; camera.y = 0; return; }
+  camera.x = taxi.x + taxi.w/2 - VIEW_W/2;
+  camera.y = taxi.y + taxi.h/2 - VIEW_H/2;
+  clampCamera();
+}
+
+function updateCamera() {
+  if (!taxi) return;
+  const cx = taxi.x + taxi.w/2;
+  const cy = taxi.y + taxi.h/2;
+  const left   = camera.x + (VIEW_W - CAM_DEAD_W) / 2;
+  const right  = left + CAM_DEAD_W;
+  const top    = camera.y + (VIEW_H - CAM_DEAD_H) / 2;
+  const bottom = top + CAM_DEAD_H;
+
+  if (cx < left)   camera.x -= left - cx;
+  if (cx > right)  camera.x += cx - right;
+  if (cy < top)    camera.y -= top - cy;
+  if (cy > bottom) camera.y += cy - bottom;
+
+  clampCamera();
 }
 
 // ── Draw ────────────────────────────────────────────────────
@@ -1691,6 +1733,8 @@ function gameLoop(now) {
                  flying && (taxi.thrustLeft || taxi.thrustRight));
   setThrustHaptics(flying && taxi.thrustUp);
 
+  // Presentation, so it belongs here and not in the simulation step
+  updateCamera();
   draw();
 }
 

@@ -13,6 +13,8 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   LEVELS, initLevel, update, draw, crash, createTaxi, GEAR_LEN, PERSON_WALK, PERSON_HALF_W,
   input, nearLandingSurface, setThrustSound, setThrustHaptics, stopRumble,
   VIEW_W, VIEW_H, SECTOR_W, SECTOR_H,
+  updateCamera, centerCameraOnTaxi, CAM_DEAD_W, CAM_DEAD_H,
+  get $camera(){return camera},
   get $worldW(){return worldW}, get $worldH(){return worldH},
   get $starField(){return starField},
   sndHeyTaxi, touchdownFeedback, sndFuelWarn, ensureEngine, ensureAudio,
@@ -709,6 +711,67 @@ check("normal retina laptop keeps full DPR", modest.bufW === Math.round(modest.c
       `(buf=${modest.bufW}, css=${modest.cssW})`);
 
 layoutAt(900, 700, 1);   // restore for the remaining tests
+
+console.log("\n=== 9i. Camera ===");
+// One sector: the camera can never move, which is what keeps single player
+// looking exactly as it did before.
+$level = 0; $lives = 99; $state = "playing"; initLevel();
+centerCameraOnTaxi();
+check("stays at the origin in a one-sector world",
+      $camera.x === 0 && $camera.y === 0, `(${$camera.x},${$camera.y})`);
+$taxi.x = 700; $taxi.y = 400;
+updateCamera();
+check("still cannot move in a one-sector world",
+      $camera.x === 0 && $camera.y === 0, `(${$camera.x},${$camera.y})`);
+
+// Multi-sector world
+const camIdx = pushTestLevel(3, 2);
+$level = camIdx; $lives = 99; $state = "playing"; initLevel();
+$taxi.x = 1200; $taxi.y = 500; $taxi.landed = false;
+centerCameraOnTaxi();
+const centred = { x: $camera.x, y: $camera.y };
+check("centres on the taxi when the world allows it",
+      Math.abs(centred.x - (1200 + $taxi.w/2 - VIEW_W/2)) < 0.001,
+      `(cam.x=${centred.x})`);
+
+// Dead zone: small movements must not shift the view at all
+$taxi.x = 1200 + CAM_DEAD_W/2 - 20;
+updateCamera();
+check("a small move inside the dead zone does not shift the camera",
+      $camera.x === centred.x, `(${$camera.x} vs ${centred.x})`);
+
+// Leaving the dead zone drags the camera along
+$taxi.x = 1200 + CAM_DEAD_W;
+updateCamera();
+check("leaving the dead zone drags the camera", $camera.x > centred.x,
+      `(${$camera.x} vs ${centred.x})`);
+check("drags no further than necessary",
+      Math.abs(($taxi.x + $taxi.w/2) - ($camera.x + (VIEW_W + CAM_DEAD_W)/2)) < 0.001,
+      `(taxi centre ${$taxi.x + $taxi.w/2}, dead-zone edge ${$camera.x + (VIEW_W + CAM_DEAD_W)/2})`);
+
+// Clamping at all four world edges
+$taxi.x = 0; $taxi.y = 0; updateCamera();
+check("clamps at the top-left corner", $camera.x === 0 && $camera.y === 0,
+      `(${$camera.x},${$camera.y})`);
+$taxi.x = $worldW; $taxi.y = $worldH; updateCamera();
+check("clamps at the bottom-right corner",
+      $camera.x === $worldW - VIEW_W && $camera.y === $worldH - VIEW_H,
+      `(${$camera.x},${$camera.y} vs ${$worldW - VIEW_W},${$worldH - VIEW_H})`);
+
+// The camera must never influence the simulation
+$taxi.x = 1200; $taxi.y = 500; $taxi.vx = 0.3; $taxi.vy = 0.2; $taxi.landed = false;
+$camera.x = 0; $camera.y = 0;
+update();
+const withCamAtOrigin = { x: $taxi.x, y: $taxi.y, vx: $taxi.vx, vy: $taxi.vy };
+$taxi.x = 1200; $taxi.y = 500; $taxi.vx = 0.3; $taxi.vy = 0.2; $taxi.landed = false;
+$camera.x = 900; $camera.y = 300;
+update();
+check("the simulation is unaffected by camera position",
+      $taxi.x === withCamAtOrigin.x && $taxi.y === withCamAtOrigin.y &&
+      $taxi.vx === withCamAtOrigin.vx && $taxi.vy === withCamAtOrigin.vy,
+      `(${$taxi.x},${$taxi.y} vs ${withCamAtOrigin.x},${withCamAtOrigin.y})`);
+LEVELS.pop();
+$level = 0; $lives = 99; $state = "playing"; initLevel();
 
 console.log("\n=== 10. draw() survives every state ===");
 for (const s of ["title", "playing", "crashed", "levelComplete", "gameOver", "win"]) {
