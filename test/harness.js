@@ -16,7 +16,9 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   updateCamera, centerCameraOnTaxi, CAM_DEAD_W, CAM_DEAD_H,
   drawEdgeMarkers, edgeMarkerFor, C,
   showExplosion, hideExplosion, sndExplosion, primeExplosionSound,
-  farePolicy,
+  farePolicy, handleInput, bootGame, MENU_ENTRIES,
+  get $menuIndex(){return menuIndex}, set $menuIndex(v){menuIndex=v},
+  get $gameMode(){return gameMode}, set $gameMode(v){gameMode=v},
   get $explosionPrimed(){return explosionPrimed}, set $explosionPrimed(v){explosionPrimed=v},
   get $viewScale(){return viewScale}, set $viewScale(v){viewScale=v},
   get $camera(){return camera},
@@ -1118,8 +1120,66 @@ console.log("\n=== 9n. Fare board ===");
 }
 $level = 0; $lives = 99; $state = "playing"; initLevel();
 
+console.log("\n=== 9o. Mode selection ===");
+{
+  const press = () => { input.action = true; handleInput(); };
+  const nudge = dir => {
+    input.left = input.right = false;
+    input[dir] = true; handleInput();
+    input[dir] = false; handleInput();     // release, so the latch can re-arm
+  };
+
+  bootGame();
+  check("the game boots into the mode menu", $state === "menu", `(${$state})`);
+  check("single player is preselected", $menuIndex === 0, `(${$menuIndex})`);
+  check("no mode is committed before a choice", $gameMode === "single", `(${$gameMode})`);
+
+  nudge("right");
+  check("steering right moves to multiplayer", $menuIndex === 1, `(${$menuIndex})`);
+  nudge("right");
+  check("the selection stops at the last entry", $menuIndex === 1, `(${$menuIndex})`);
+  nudge("left");
+  check("steering left moves back", $menuIndex === 0, `(${$menuIndex})`);
+  nudge("left");
+  check("the selection stops at the first entry", $menuIndex === 0, `(${$menuIndex})`);
+
+  // A held direction must not run the selection along. With only two entries the
+  // clamp would hide a runaway cursor, so count the move sound instead.
+  $menuIndex = 0;
+  input.right = false; handleInput();        // disarm the latch
+  audioLog.sources = 0;
+  input.right = true;
+  handleInput(); handleInput(); handleInput();
+  input.right = false; handleInput();
+  check("holding a direction moves the selection once, not every frame",
+        audioLog.sources === 1, `(${audioLog.sources} cursor moves)`);
+
+  // ── Multiplayer is offered but has no server yet ──
+  press();
+  check("choosing multiplayer records the mode", $gameMode === "multi", `(${$gameMode})`);
+  check("choosing multiplayer does not start a game", $state === "menu", `(${$state})`);
+
+  // ── Single player must reach the old title flow untouched ──
+  bootGame();
+  press();
+  check("choosing single player goes to the title screen",
+        $state === "title", `(${$state})`);
+  check("single player stays the committed mode", $gameMode === "single", `(${$gameMode})`);
+  press();
+  check("the title screen still starts the game", $state === "playing", `(${$state})`);
+  check("starting from the title gives the usual three lives",
+        $lives === 3, `(${$lives})`);
+  check("and starts on the first level", $level === 0, `(${$level})`);
+
+  // ── Game over returns to the menu, not straight into a new run ──
+  $state = "gameOver";
+  press();
+  check("game over leads back to the mode menu", $state === "menu", `(${$state})`);
+}
+$level = 0; $lives = 99; $state = "playing"; initLevel();
+
 console.log("\n=== 10. draw() survives every state ===");
-for (const s of ["title", "playing", "crashed", "levelComplete", "gameOver", "win"]) {
+for (const s of ["menu", "title", "playing", "crashed", "levelComplete", "gameOver", "win"]) {
   $state = s;
   let threw = null;
   try { draw(); } catch (e) { threw = e.message; }

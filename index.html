@@ -713,7 +713,15 @@ function actionHint(verb) {
 }
 
 // ── Game State ──────────────────────────────────────────────
-let state = "title";  // title | playing | crashed | levelComplete | gameOver | win
+// "menu" sits in front of the old title screen and is the only state added for
+// multiplayer. Single player passes straight through it into the flow it always
+// had, so nothing behind this point had to change.
+let state = "menu";   // menu | title | playing | crashed | levelComplete | gameOver | win
+let gameMode = "single";                        // single | multi
+const MENU_ENTRIES = ["SINGLE PLAYER", "MULTIPLAYER"];
+let menuIndex = 0;
+let menuNavLatched = false;   // a held stick must move the cursor once, not per frame
+let menuNotice = "";
 let level = 0;
 let score = 0;
 let lives = 3;
@@ -1462,6 +1470,10 @@ function draw() {
   ctx.fillStyle = C.black;
   ctx.fillRect(0, 0, VIEW_W, VIEW_H);
 
+  if (state === "menu") {
+    drawMenu();
+    return;
+  }
   if (state === "title") {
     drawTitle();
     return;
@@ -1833,6 +1845,45 @@ function drawOverlay(title, subtitle, color) {
   ctx.fillText(subtitle, VIEW_W/2, VIEW_H/2 + 20);
 }
 
+function drawMenu() {
+  drawStars();
+
+  ctx.font = "28px 'Press Start 2P'";
+  ctx.fillStyle = C.hotYellow;
+  ctx.textAlign = "center";
+  ctx.fillText("SPACE TAXI", VIEW_W/2, 150);
+
+  ctx.font = "10px 'Press Start 2P'";
+  ctx.fillStyle = C.cyan;
+  ctx.fillText("A COMMODORE 64 CLASSIC", VIEW_W/2, 180);
+
+  for (let i = 0; i < MENU_ENTRIES.length; i++) {
+    const picked = i === menuIndex;
+    const y = 260 + i * 40;
+    ctx.font = "12px 'Press Start 2P'";
+    ctx.fillStyle = picked ? C.hotYellow : C.lightGrey;
+    ctx.fillText(MENU_ENTRIES[i], VIEW_W/2, y);
+    // Date.now, not levelTimer: update() does not run in the menu, so the
+    // simulation clock stands still here — same as on the other idle screens.
+    if (picked && Math.sin(Date.now() * 0.005) > 0) {
+      ctx.fillText("▶", VIEW_W/2 - 150, y);
+      ctx.fillText("◀", VIEW_W/2 + 150, y);
+    }
+  }
+
+  if (menuNotice) {
+    ctx.font = "10px 'Press Start 2P'";
+    ctx.fillStyle = C.lightRed;
+    ctx.fillText(menuNotice, VIEW_W/2, 360);
+  }
+
+  ctx.font = "9px 'Press Start 2P'";
+  ctx.fillStyle = C.lightGrey;
+  ctx.fillText(isTouchDevice ? "◀ ▶ TO CHOOSE" : "ARROW KEYS TO CHOOSE",
+               VIEW_W/2, 410);
+  ctx.fillText(actionHint("CONFIRM"), VIEW_W/2, 430);
+}
+
 function drawTitle() {
   drawStars();
   // Big title
@@ -1996,19 +2047,66 @@ function gameLoop(now) {
   draw();
 }
 
+// The cursor moves on the edge of a steering input, never while it is held —
+// the same two buttons fly the taxi, and a held stick would race the cursor.
+function handleMenuInput() {
+  const dir = input.right ? 1 : (input.left ? -1 : 0);
+  if (dir === 0) menuNavLatched = false;
+  else if (!menuNavLatched) {
+    menuNavLatched = true;
+    menuIndex = Math.max(0, Math.min(MENU_ENTRIES.length - 1, menuIndex + dir));
+    menuNotice = "";
+    beep(660, 0.04, "square", 0.05);
+  }
+
+  if (!input.action) return;
+  input.action = false;
+  unlockAudio();
+  gameMode = menuIndex === 0 ? "single" : "multi";
+  if (gameMode === "single") {
+    state = "title";
+    menuNotice = "";
+  } else {
+    // The lobby lands here once the server exists. Until then say so plainly
+    // rather than dropping the player into a screen that cannot connect.
+    menuNotice = "NO SERVER YET";
+    sndSad();
+  }
+}
+
+function startRun() {
+  level = 0;
+  score = 0;
+  lives = 3;
+  totalPassengersDelivered = 0;
+  // A forced ?seed= replays the same run every time; otherwise roll a new one
+  if (forcedSeed !== null) { runSeed = forcedSeed; initCount = 0; }
+  else newRunSeed();
+  initLevel();
+}
+
+// Boot and "back to square one" are the same thing, so they are one function
+function bootGame() {
+  gameMode = "single";
+  menuIndex = 0;
+  menuNavLatched = false;
+  menuNotice = "";
+  state = "menu";
+  hideExplosion();
+}
+
 function handleInput() {
+  if (state === "menu") { handleMenuInput(); return; }
+
   if (input.action) {
     input.action = false;
     unlockAudio();
-    if (state === "title" || state === "gameOver" || state === "win") {
-      level = 0;
-      score = 0;
-      lives = 3;
-      totalPassengersDelivered = 0;
-      // A forced ?seed= replays the same run every time; otherwise roll a new one
-      if (forcedSeed !== null) { runSeed = forcedSeed; initCount = 0; }
-      else newRunSeed();
-      initLevel();
+    if (state === "gameOver" || state === "win") {
+      // Back to the menu rather than straight into a new run: without it there
+      // is no way back to the mode choice short of reloading the page.
+      bootGame();
+    } else if (state === "title") {
+      startRun();
     } else if (state === "crashed") {
       initLevel();
     } else if (state === "levelComplete") {
@@ -2026,12 +2124,14 @@ function handleInput() {
 if (forcedSeed !== null) { runSeed = forcedSeed; initCount = 0; }
 else newRunSeed();
 totalPassengersDelivered = 0;
+levelTimer = 0;
 particles = [];
 messages = [];
 taxi = createTaxi();
 passengers = [];
 pads = [];
 obstacles = [];
+bootGame();
 
 document.addEventListener("visibilitychange", applyPauseState);
 window.addEventListener("blur",  () => { windowBlurred = true;  applyPauseState(); });
