@@ -1,0 +1,240 @@
+{
+  "schema": 1,
+  "viewport": {
+    "w": 800,
+    "h": 500
+  },
+  "sector": {
+    "w": 800,
+    "h": 500
+  },
+  "levels": [
+    {
+      "index": 0,
+      "name": "EASY CITY",
+      "cols": 1,
+      "rows": 1,
+      "worldW": 800,
+      "worldH": 500,
+      "fares": 2,
+      "policy": {
+        "activeFares": 1,
+        "refillOn": "delivered",
+        "refillDelay": 0
+      },
+      "pads": [
+        {
+          "index": 0,
+          "x": 50,
+          "y": 430,
+          "w": 130,
+          "label": "1"
+        },
+        {
+          "index": 1,
+          "x": 350,
+          "y": 350,
+          "w": 130,
+          "label": "2"
+        },
+        {
+          "index": 2,
+          "x": 650,
+          "y": 430,
+          "w": 130,
+          "label": "3"
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "name": "SKYSCRAPER",
+      "cols": 1,
+      "rows": 1,
+      "worldW": 800,
+      "worldH": 500,
+      "fares": 3,
+      "policy": {
+        "activeFares": 1,
+        "refillOn": "delivered",
+        "refillDelay": 0
+      },
+      "pads": [
+        {
+          "index": 0,
+          "x": 20,
+          "y": 450,
+          "w": 130,
+          "label": "A"
+        },
+        {
+          "index": 1,
+          "x": 200,
+          "y": 320,
+          "w": 130,
+          "label": "B"
+        },
+        {
+          "index": 2,
+          "x": 440,
+          "y": 200,
+          "w": 130,
+          "label": "C"
+        },
+        {
+          "index": 3,
+          "x": 665,
+          "y": 380,
+          "w": 130,
+          "label": "D"
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "name": "THE CAVERN",
+      "cols": 1,
+      "rows": 1,
+      "worldW": 800,
+      "worldH": 500,
+      "fares": 3,
+      "policy": {
+        "activeFares": 1,
+        "refillOn": "delivered",
+        "refillDelay": 0
+      },
+      "pads": [
+        {
+          "index": 0,
+          "x": 30,
+          "y": 300,
+          "w": 120,
+          "label": "1"
+        },
+        {
+          "index": 1,
+          "x": 250,
+          "y": 440,
+          "w": 130,
+          "label": "2"
+        },
+        {
+          "index": 2,
+          "x": 500,
+          "y": 300,
+          "w": 115,
+          "label": "3"
+        },
+        {
+          "index": 3,
+          "x": 665,
+          "y": 440,
+          "w": 130,
+          "label": "4"
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "name": "METROPLEX",
+      "cols": 1,
+      "rows": 1,
+      "worldW": 800,
+      "worldH": 500,
+      "fares": 4,
+      "policy": {
+        "activeFares": 1,
+        "refillOn": "delivered",
+        "refillDelay": 0
+      },
+      "pads": [
+        {
+          "index": 0,
+          "x": 10,
+          "y": 450,
+          "w": 130,
+          "label": "A"
+        },
+        {
+          "index": 1,
+          "x": 160,
+          "y": 280,
+          "w": 115,
+          "label": "B"
+        },
+        {
+          "index": 2,
+          "x": 360,
+          "y": 150,
+          "w": 115,
+          "label": "C"
+        },
+        {
+          "index": 3,
+          "x": 515,
+          "y": 320,
+          "w": 130,
+          "label": "D"
+        },
+        {
+          "index": 4,
+          "x": 665,
+          "y": 450,
+          "w": 130,
+          "label": "E"
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "name": "SPACE STATION",
+      "cols": 1,
+      "rows": 1,
+      "worldW": 800,
+      "worldH": 500,
+      "fares": 4,
+      "policy": {
+        "activeFares": 1,
+        "refillOn": "delivered",
+        "refillDelay": 0
+      },
+      "pads": [
+        {
+          "index": 0,
+          "x": 12,
+          "y": 240,
+          "w": 120,
+          "label": "1"
+        },
+        {
+          "index": 1,
+          "x": 200,
+          "y": 440,
+          "w": 130,
+          "label": "2"
+        },
+        {
+          "index": 2,
+          "x": 400,
+          "y": 120,
+          "w": 120,
+          "label": "3"
+        },
+        {
+          "index": 3,
+          "x": 600,
+          "y": 350,
+          "w": 130,
+          "label": "4"
+        },
+        {
+          "index": 4,
+          "x": 660,
+          "y": 180,
+          "w": 130,
+          "label": "5"
+        }
+      ]
+    }
+  ]
+}
