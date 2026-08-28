@@ -14,7 +14,7 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   input, nearLandingSurface, setThrustSound, setThrustHaptics, stopRumble,
   VIEW_W, VIEW_H, SECTOR_W, SECTOR_H,
   updateCamera, centerCameraOnTaxi, CAM_DEAD_W, CAM_DEAD_H,
-  drawEdgeMarkers, edgeMarkerFor, C,
+  drawEdgeMarkers, edgeMarkerFor, drawRemoteMarkers, C,
   showExplosion, hideExplosion, sndExplosion, primeExplosionSound,
   farePolicy, handleInput, bootGame, MENU_ENTRIES,
   netConnect, netDisconnect, netTick, netHeartbeat, netFrame, updateRemotes, netSend,

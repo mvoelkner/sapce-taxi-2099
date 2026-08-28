@@ -1209,6 +1209,7 @@ function applyRoomState(next) {
   // Not gated on "playing": the state that follows a crash is exactly the one
   // carrying the life it cost, and ignoring it there would lose the count.
   if (pads.length && (state === "playing" || state === "crashed")) {
+    applyServerWorld();
     applyServerPlayers();
     syncFaresFromServer();
   }
@@ -1319,6 +1320,19 @@ function netFrame() {
 // Lives, score and the end of the round belong to the server, so online they
 // are copied in rather than counted here. The fares are the same story: the
 // local board generates nothing while online, it mirrors what the room holds.
+// The room's world grows and shrinks with the player count, and initLevel only
+// reads it once. Without this a player who joined alone stays penned inside one
+// sector while everyone who arrived later flies a world four times the size —
+// so each is regularly somewhere the other's screen cannot reach.
+function applyServerWorld() {
+  if (!roomState || !roomState.world_w || !roomState.world_h) return;
+  if (worldW === roomState.world_w && worldH === roomState.world_h) return;
+  worldW = roomState.world_w;
+  worldH = roomState.world_h;
+  buildStarField();   // the old field only covered the old area
+  clampCamera();      // a shrunk world can leave the view outside it
+}
+
 function applyServerPlayers() {
   if (!roomState || !roomState.players || !myPlayerId) return;
   const me = roomState.players[myPlayerId];
@@ -2148,6 +2162,7 @@ function draw() {
   ctx.restore();   // back to screen space for HUD and overlays
 
   drawEdgeMarkers();
+  drawRemoteMarkers();
 
   // HUD
   drawHUD();
@@ -2196,6 +2211,41 @@ function remoteColor(id) {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
   return REMOTE_COLORS[Math.abs(h) % REMOTE_COLORS.length];
+}
+
+// Where the others are when they are not on screen. The world is four times the
+// viewport at two players and nine at ten, so a rival is off the edge most of
+// the time — and without this the standings say four players while the screen
+// shows one, which reads as a fault rather than as distance.
+//
+// Screen space, so it belongs after the camera transform is popped.
+function drawRemoteMarkers() {
+  if (!remotes.size) return;
+  const players = (roomState && roomState.players) || {};
+
+  for (const r of remotes.values()) {
+    if (!r.seen) continue;
+    const info = players[r.id];
+    if (info && info.alive === false) continue;   // out of the round, not away
+
+    const m = edgeMarkerFor(r.x + r.w/2, r.y + r.h/2);
+    if (!m) continue;                             // on screen, already drawn
+
+    ctx.save();
+    ctx.translate(m.x, m.y);
+    ctx.rotate(m.angle);
+    ctx.fillStyle = remoteColor(r.id);
+    // Smaller than the pad arrows, and hollowed by a notch, so a rival is never
+    // mistaken for somewhere to fly to.
+    ctx.beginPath();
+    ctx.moveTo(7, 0);
+    ctx.lineTo(-4, -5);
+    ctx.lineTo(-1, 0);
+    ctx.lineTo(-4, 5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 function drawRemotes() {

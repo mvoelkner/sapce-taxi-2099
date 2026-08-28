@@ -40,6 +40,7 @@ function spawnClient(label) {
     "get $taxi(){return taxi}", "get $pads(){return pads}",
     "get $passengers(){return passengers}", "get $remotes(){return remotes}",
     "get $roomState(){return roomState}", "get $myPlayerId(){return myPlayerId}",
+    "get $worldW(){return worldW}", "get $worldH(){return worldH}",
     "get $lives(){return lives}", "get $score(){return score}",
     "set $menuIndex(v){menuIndex=v}", "set $playerName(v){playerName=v}",
   ].join(",\n  ");
@@ -265,6 +266,16 @@ check("and is told about all three players",
       JSON.stringify(Object.values(C.$roomState.players).map(p => p.name)));
 
 await pump([A, B, C], 200);
+
+// A third player grows the room, and everyone has to grow with it. Otherwise
+// the ones who joined earlier stay penned in a corner of the map the newcomer
+// is flying, and each keeps leaving the others' screens.
+const worlds = [A, B, C].map(c => `${c.$worldW}x${c.$worldH}`);
+check("all three agree on the size of the world",
+      new Set(worlds).size === 1, JSON.stringify(worlds));
+check("and it is the one the room reports",
+      A.$worldW === A.$roomState.world_w && A.$worldH === A.$roomState.world_h,
+      `(${A.$worldW}x${A.$worldH} vs ${A.$roomState.world_w}x${A.$roomState.world_h})`);
 
 const wreckId = loser.$myPlayerId;
 const wreckSeen = C.$remotes.get(wreckId);

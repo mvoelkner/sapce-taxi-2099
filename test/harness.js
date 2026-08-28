@@ -1455,6 +1455,48 @@ console.log("\n=== 9r. Playing online ===");
   check("the bump is not reported twice in a row",
         (() => { w4.sent.length = 0; update(); return !w4.lastOf("collide"); })());
 
+  // ── The world has to follow the room, not just the moment of joining ──
+  // A player who joined alone got a one-sector world. When the next one arrives
+  // the room grows, and if this client keeps its old size the two are playing
+  // on different maps: one is clamped inside a quarter of the other's world,
+  // which is exactly where a taxi goes missing from someone's screen.
+  const w8 = goOnline({
+    cols: 1, rows: 1, world_w: 800, world_h: 500,
+    players: { me: { name: "ME", lives: 3, score: 0, alive: true } },
+  });
+  check("a lone player starts in one sector",
+        $worldW === 800 && $worldH === 500, `(${$worldW}x${$worldH})`);
+  const starsBefore = $starField.length;
+
+  w8.deliver([null, null, "room:testroom", "state", snapshot({
+    cols: 2, rows: 2, world_w: 1600, world_h: 1000,
+    players: {
+      me:    { name: "ME",   lives: 3, score: 0, alive: true },
+      other: { name: "THEM", lives: 3, score: 0, alive: true },
+    },
+  })]);
+  check("a second player grows this client's world too",
+        $worldW === 1600 && $worldH === 1000, `(${$worldW}x${$worldH})`);
+  check("and the stars are respread over it",
+        $starField.length > starsBefore, `(${starsBefore} -> ${$starField.length})`);
+  check("so the taxi is no longer penned into the first sector",
+        (() => { $taxi.x = 1400; $taxi.y = 800; $taxi.landed = false; update();
+                 return $taxi.x > 800 && $taxi.y > 500; })(),
+        `(${$taxi.x},${$taxi.y})`);
+
+  // Unchanged dimensions must not churn the star field every broadcast
+  const starsNow = $starField.length;
+  const firstStar = $starField[0];
+  w8.deliver([null, null, "room:testroom", "state", snapshot({
+    cols: 2, rows: 2, world_w: 1600, world_h: 1000,
+    players: {
+      me:    { name: "ME",   lives: 3, score: 5, alive: true },
+      other: { name: "THEM", lives: 3, score: 0, alive: true },
+    },
+  })]);
+  check("a state that changes nothing about the world leaves it alone",
+        $starField.length === starsNow && $starField[0] === firstStar);
+
   // ── Lives come from the server, not from the local counter ──
   const w5 = goOnline();
   check("lives start from the server's number", $lives === 3, `(${$lives})`);
@@ -1537,6 +1579,64 @@ console.log("\n=== 9r. Playing online ===");
         !texts.includes("THEM"), `(${JSON.stringify(texts)})`);
   check("but is still listed, marked out",
         texts.some(t => t === "THEM 90 OUT"), `(${JSON.stringify(texts)})`);
+
+  // ── An off-screen player must not simply be absent ──
+  // The standings say two, the screen shows one, and nothing explains the
+  // difference. The pads already get an edge marker for this; players did not.
+  const w9 = goOnline({
+    cols: 2, rows: 2, world_w: 1600, world_h: 1000,
+    players: {
+      me:    { name: "ME",   lives: 3, score: 0, alive: true },
+      other: { name: "THEM", lives: 3, score: 0, alive: true },
+    },
+  });
+  $camera.x = 0; $camera.y = 0;
+
+  const marks = [];
+  ctxStub.rotate = a => marks.push({ op: "rotate", a });
+  ctxStub.translate = (x, y) => marks.push({ op: "translate", x, y });
+
+  // Driven through draw(), not by calling the marker function directly: the
+  // point is that a full frame draws it, and a direct call would pass even if
+  // nothing ever invoked it.
+  const put = (x, y) => {
+    for (let i = 0; i < 40; i++) {
+      w9.deliver([null, null, "room:testroom", "pos", { id: "other", x, y }]);
+      updateRemotes();
+    }
+    marks.length = 0;
+    draw();
+    return marks.filter(m => m.op === "rotate").length;
+  };
+
+  const onScreen = put(300, 200);
+  const offScreen = put(1500, 900);
+  check("an off-screen player adds a marker a visible one does not",
+        offScreen > onScreen, `(${onScreen} on screen vs ${offScreen} off)`);
+
+  const at = marks.find(m => m.op === "translate" &&
+                             m.x >= 0 && m.x <= VIEW_W && m.y >= 0 && m.y <= VIEW_H);
+  check("it sits on the edge, not off it", !!at, `(${JSON.stringify(marks)})`);
+  check("pointing towards them",
+        marks.some(m => m.op === "rotate" && m.a > 0 && m.a < Math.PI/2),
+        `(${JSON.stringify(marks.filter(m => m.op === "rotate"))})`);
+
+  // Someone out of the round is not somewhere to look
+  w9.deliver([null, null, "room:testroom", "state", snapshot({
+    cols: 2, rows: 2, world_w: 1600, world_h: 1000,
+    players: {
+      me:    { name: "ME",   lives: 3, score: 0, alive: true },
+      other: { name: "THEM", lives: 0, score: 0, alive: false },
+    },
+  })]);
+  marks.length = 0;
+  draw();
+  check("a player who is out gets no marker",
+        marks.filter(m => m.op === "rotate").length === onScreen,
+        `(${marks.filter(m => m.op === "rotate").length} vs ${onScreen} baseline)`);
+
+  delete ctxStub.rotate;
+  delete ctxStub.translate;
 
   // ── Single player must be completely unaffected ──
   netDisconnect();
