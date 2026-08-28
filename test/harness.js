@@ -7,6 +7,7 @@ const {
   ctxStub, canvasStub, explosionStub, explosionSoundStub,
   audioLog, vibrationLog, speechLog, timerQueue, flushTimers,
   sockets,
+  hapticLog, installCapacitor, removeCapacitor,
 } = require("./game-env.js");
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -1444,6 +1445,83 @@ console.log("\n=== 9r. Playing online ===");
 
   netDisconnect();
   sockets.length = 0;
+  $level = 0; $lives = 99; $state = "playing"; initLevel();
+}
+
+console.log("\n=== 9s. Haptics on both backends ===");
+{
+  // ── The web backend must be exactly what it always was ──
+  removeCapacitor();
+  $level = 0; $lives = 99; $state = "playing"; initLevel();
+
+  const webPattern = fn => { vibrationLog.length = 0; fn(); return vibrationLog[0]; };
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  check("a soft landing still buzzes as before",
+        same(webPattern(() => touchdownFeedback(0.5)), [18]),
+        `(${JSON.stringify(vibrationLog)})`);
+  check("a hard landing still buzzes as before",
+        same(webPattern(() => touchdownFeedback(1.5)), [55]),
+        `(${JSON.stringify(vibrationLog)})`);
+  check("a crash still buzzes as before",
+        same(webPattern(() => haptic(HAPTICS.crash)), [60, 40, 120]),
+        `(${JSON.stringify(vibrationLog)})`);
+  check("the refuel penalty still buzzes as before",
+        same(webPattern(() => haptic(HAPTICS.penalty)), [180]),
+        `(${JSON.stringify(vibrationLog)})`);
+  check("the fuel warning still buzzes as before",
+        same(webPattern(() => haptic(HAPTICS.fuelWarn)), [30, 70, 30]),
+        `(${JSON.stringify(vibrationLog)})`);
+  check("the shout still buzzes as before",
+        same(webPattern(() => haptic(HAPTICS.shout)), [25, 50, 25]),
+        `(${JSON.stringify(vibrationLog)})`);
+
+  // ── Native backend ──
+  installCapacitor();
+  const native = fn => { hapticLog.length = 0; vibrationLog.length = 0; fn(); return hapticLog; };
+
+  check("a crash reaches the taptic engine",
+        native(() => haptic(HAPTICS.crash)).length === 1,
+        `(${JSON.stringify(hapticLog)})`);
+  check("and reports as an error, not a tap",
+        hapticLog[0].call === "notification" && hapticLog[0].type === "ERROR",
+        `(${JSON.stringify(hapticLog[0])})`);
+  check("it does not also call navigator.vibrate",
+        vibrationLog.length === 0, `(${JSON.stringify(vibrationLog)})`);
+
+  check("a soft landing is a light tap",
+        native(() => touchdownFeedback(0.5))[0].call === "impact" &&
+        hapticLog[0].style === "LIGHT", `(${JSON.stringify(hapticLog)})`);
+  check("a hard landing is a heavier one",
+        native(() => touchdownFeedback(1.5))[0].style === "MEDIUM",
+        `(${JSON.stringify(hapticLog)})`);
+  check("the refuel penalty is a warning",
+        native(() => haptic(HAPTICS.penalty))[0].type === "WARNING",
+        `(${JSON.stringify(hapticLog)})`);
+
+  // ── The sustained rumble ──
+  // navigator.vibrate does not exist on iOS at all, so the old guard would have
+  // silently disabled the rumble on exactly the platform this is built for.
+  hapticLog.length = 0;
+  stopRumble();
+  for (let i = 0; i < 40; i++) setThrustHaptics(true);
+  check("thrust rumbles natively too", hapticLog.length > 0,
+        `(${hapticLog.length} pulses in 40 steps)`);
+  check("it pulses rather than firing every frame",
+        hapticLog.length <= 5, `(${hapticLog.length} pulses in 40 steps)`);
+  setThrustHaptics(false);
+  check("letting go stops it", $rumbling === false);
+
+  // ── An unusable plugin must not take the game down ──
+  window.Capacitor.Plugins.Haptics = {
+    impact: () => { throw new Error("plugin exploded"); },
+    notification: () => { throw new Error("plugin exploded"); },
+  };
+  let threw = null;
+  try { haptic(HAPTICS.crash); touchdownFeedback(2); } catch (e) { threw = e.message; }
+  check("a plugin that throws does not reach the game", threw === null, `(${threw})`);
+
+  removeCapacitor();
   $level = 0; $lives = 99; $state = "playing"; initLevel();
 }
 

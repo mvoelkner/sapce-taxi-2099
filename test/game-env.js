@@ -18,6 +18,7 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   showExplosion, hideExplosion, sndExplosion, primeExplosionSound,
   farePolicy, handleInput, bootGame, MENU_ENTRIES,
   netConnect, netDisconnect, netTick, netHeartbeat, updateRemotes, netSend,
+  haptic, HAPTICS, vibrate,
   get $netState(){return netState}, get $netError(){return netError},
   get $myPlayerId(){return myPlayerId},
   get $roomState(){return roomState}, get $remotes(){return remotes},
@@ -222,6 +223,30 @@ WebSocketStub.CLOSING = 2;
 WebSocketStub.CLOSED = 3;
 globalThis.WebSocket = WebSocketStub;
 
+// ── Capacitor stub ──────────────────────────────────────────
+// Absent by default, so every existing test still exercises the web path.
+// installCapacitor() puts a recording Haptics plugin in place of the real one.
+const hapticLog = [];
+function installCapacitor() {
+  hapticLog.length = 0;
+  globalThis.window.Capacitor = globalThis.Capacitor = {
+    isNativePlatform: () => true,
+    getPlatform: () => "ios",
+    Plugins: {
+      Haptics: {
+        impact: o => hapticLog.push({ call: "impact", style: o && o.style }),
+        notification: o => hapticLog.push({ call: "notification", type: o && o.type }),
+        vibrate: o => hapticLog.push({ call: "vibrate", duration: o && o.duration }),
+      },
+    },
+  };
+}
+function removeCapacitor() {
+  delete globalThis.window.Capacitor;
+  delete globalThis.Capacitor;
+  hapticLog.length = 0;
+}
+
 new Function(js)();
 
 // Shared by the test harness and the level extractor, so both drive the real
@@ -231,4 +256,5 @@ module.exports = {
   ctxStub, canvasStub, explosionStub, explosionSoundStub,
   audioLog, vibrationLog, speechLog, timerQueue, flushTimers, noop,
   sockets, WebSocketStub,
+  hapticLog, installCapacitor, removeCapacitor,
 };

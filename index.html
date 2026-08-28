@@ -524,6 +524,57 @@ function setAudioSuspended(suspend) {
   if (!audioCtx) return;
   try { suspend ? audioCtx.suspend() : audioCtx.resume(); } catch (e) {}
 }
+// ── Haptics ─────────────────────────────────────────────────
+// Two backends behind one set of named events. The web has navigator.vibrate,
+// which takes millisecond patterns — and which iOS Safari does not implement at
+// all, so on an iPhone the browser build is simply silent. Wrapped by Capacitor
+// the Taptic Engine is reachable instead, but it speaks in kinds of tap rather
+// than durations. Hence events, not patterns: each backend renders them its own
+// way, and the call sites stop caring which one is present.
+const HAPTICS = {
+  landSoft: "landSoft",
+  landHard: "landHard",
+  crash:    "crash",
+  penalty:  "penalty",
+  fuelWarn: "fuelWarn",
+  shout:    "shout",
+  rumble:   "rumble",
+};
+
+// Web: the exact patterns the game shipped with, so the browser build is
+// unchanged. Native: the closest thing the Taptic Engine offers.
+const HAPTIC_MAP = {
+  landSoft: { web: [18],          native: ["impact", "LIGHT"]         },
+  landHard: { web: [55],          native: ["impact", "MEDIUM"]        },
+  crash:    { web: [60, 40, 120], native: ["notification", "ERROR"]   },
+  penalty:  { web: [180],         native: ["notification", "WARNING"] },
+  fuelWarn: { web: [30, 70, 30],  native: ["notification", "WARNING"] },
+  shout:    { web: [25, 50, 25],  native: ["impact", "LIGHT"]         },
+  rumble:   { web: 220,           native: ["impact", "HEAVY"]         },
+};
+
+function nativeHaptics() {
+  const cap = window.Capacitor;
+  if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+  return (cap.Plugins && cap.Plugins.Haptics) || null;
+}
+
+function haptic(kind) {
+  const spec = HAPTIC_MAP[kind];
+  if (!spec) return;
+  const plugin = nativeHaptics();
+  if (plugin) {
+    const [call, arg] = spec.native;
+    try {
+      // A misbehaving plugin must not take a landing down with it
+      if (call === "impact") plugin.impact({ style: arg });
+      else plugin.notification({ type: arg });
+    } catch (e) {}
+    return;
+  }
+  vibrate(spec.web);
+}
+
 function vibrate(pattern) {
   if (!navigator.vibrate) return;
   try { navigator.vibrate(pattern); } catch (e) {}
