@@ -952,7 +952,7 @@ console.log("\n=== 9o. Mode selection ===");
 {
   const press = () => { input.action = true; handleInput(); };
   const nudge = dir => {
-    input.left = input.right = false;
+    input.left = input.right = input.up = input.down = false;
     input[dir] = true; handleInput();
     input[dir] = false; handleInput();     // release, so the latch can re-arm
   };
@@ -970,6 +970,35 @@ console.log("\n=== 9o. Mode selection ===");
   check("steering left moves back", $menuIndex === 0, `(${$menuIndex})`);
   nudge("left");
   check("the selection stops at the first entry", $menuIndex === 0, `(${$menuIndex})`);
+
+  // The list is drawn top to bottom, so up and down are the more natural pair
+  // of the two — they steer it as well.
+  nudge("down");
+  check("down moves to the next entry", $menuIndex === 1, `(${$menuIndex})`);
+  nudge("down");
+  check("down stops at the last entry", $menuIndex === 1, `(${$menuIndex})`);
+  nudge("up");
+  check("up moves back", $menuIndex === 0, `(${$menuIndex})`);
+  nudge("up");
+  check("up stops at the first entry", $menuIndex === 0, `(${$menuIndex})`);
+
+  // Mixed, so neither pair is quietly overriding the other
+  nudge("down");
+  nudge("left");
+  check("the two pairs steer the same selection", $menuIndex === 0, `(${$menuIndex})`);
+
+  // A held down-arrow must latch exactly like a held right-arrow
+  $menuIndex = 0;
+  input.down = false; handleInput();
+  audioLog.sources = 0;
+  input.down = true;
+  handleInput(); handleInput(); handleInput();
+  input.down = false; handleInput();
+  check("holding down moves the selection once, not every frame",
+        audioLog.sources === 1, `(${audioLog.sources} cursor moves)`);
+
+  $menuIndex = 0;
+  input.down = false; handleInput();
 
   // A held direction must not run the selection along. With only two entries the
   // clamp would hide a runaway cursor, so count the move sound instead.
@@ -1000,6 +1029,15 @@ console.log("\n=== 9o. Mode selection ===");
   check("starting from the title gives the usual three lives",
         $lives === 3, `(${$lives})`);
   check("and starts on the first level", $level === 0, `(${$level})`);
+
+  // Up doubles as the thrust key, so it must steer nothing once a game is on
+  const menuBefore = $menuIndex;
+  input.up = true;
+  update();
+  check("thrusting in flight still thrusts", $taxi.thrustUp === true);
+  check("and does not move the menu behind it",
+        $menuIndex === menuBefore, `(${menuBefore} -> ${$menuIndex})`);
+  input.up = false; update();
 
   // ── Game over returns to the menu, not straight into a new run ──
   $state = "gameOver";

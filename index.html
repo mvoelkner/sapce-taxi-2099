@@ -723,12 +723,15 @@ function shouldPause() {
 // ── Input ───────────────────────────────────────────────────
 // Keyboard and touch are tracked separately and merged per simulation step, so
 // neither source can clear a hold owned by the other.
-const kbHeld    = { up: false, left: false, right: false };
-const touchHeld = { up: false, left: false, right: false };
-const input     = { up: false, left: false, right: false, action: false };
+// "down" steers nothing in flight — the taxi has no downward thruster — and is
+// carried only so the menus can be driven with either pair of arrows.
+const kbHeld    = { up: false, down: false, left: false, right: false };
+const touchHeld = { up: false, down: false, left: false, right: false };
+const input     = { up: false, down: false, left: false, right: false, action: false };
 
 const GAME_KEYS = {
-  ArrowUp: "up", ArrowLeft: "left", ArrowRight: "right", Space: "action",
+  ArrowUp: "up", ArrowDown: "down",
+  ArrowLeft: "left", ArrowRight: "right", Space: "action",
 };
 
 window.addEventListener("keydown", e => {
@@ -757,7 +760,7 @@ function buttonAt(x, y) {
 
 function syncTouchState() {
   const held = new Set(activePointers.values());
-  touchHeld.up = touchHeld.left = touchHeld.right = false;
+  touchHeld.up = touchHeld.down = touchHeld.left = touchHeld.right = false;
   for (const btn of held) {
     if (btn) touchHeld[btn.dataset.input] = true;
   }
@@ -795,7 +798,7 @@ document.addEventListener("pointercancel", releasePointer);
 
 function resetInput() {
   activePointers.clear();
-  kbHeld.up = kbHeld.left = kbHeld.right = false;
+  kbHeld.up = kbHeld.down = kbHeld.left = kbHeld.right = false;
   input.action = false;
   syncTouchState();
 }
@@ -2667,6 +2670,7 @@ function gameLoop(now) {
     let steps = 0;
     while (accumulator >= STEP && steps++ < MAX_STEPS) {
       input.up    = kbHeld.up    || touchHeld.up;
+      input.down  = kbHeld.down  || touchHeld.down;
       input.left  = kbHeld.left  || touchHeld.left;
       input.right = kbHeld.right || touchHeld.right;
       handleInput();
@@ -2694,7 +2698,11 @@ function gameLoop(now) {
 // The cursor moves on the edge of a steering input, never while it is held —
 // the same two buttons fly the taxi, and a held stick would race the cursor.
 function handleMenuInput() {
-  const dir = input.right ? 1 : (input.left ? -1 : 0);
+  // Either pair of arrows. The list is drawn top to bottom, so down/up is the
+  // more natural reading, but left/right are the two buttons that exist on a
+  // touch device — so both steer it and neither is the odd one out.
+  const dir = (input.right || input.down) ? 1
+            : ((input.left || input.up) ? -1 : 0);
   if (dir === 0) menuNavLatched = false;
   else if (!menuNavLatched) {
     menuNavLatched = true;
