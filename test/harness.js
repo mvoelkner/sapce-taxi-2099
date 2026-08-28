@@ -6,6 +6,7 @@ const {
   ROOT, fs, nodePath,
   ctxStub, canvasStub, explosionStub, explosionSoundStub,
   audioLog, vibrationLog, speechLog, timerQueue, flushTimers,
+  sockets,
 } = require("./game-env.js");
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -983,7 +984,9 @@ console.log("\n=== 9o. Mode selection ===");
   // ── Multiplayer is offered but has no server yet ──
   press();
   check("choosing multiplayer records the mode", $gameMode === "multi", `(${$gameMode})`);
-  check("choosing multiplayer does not start a game", $state === "menu", `(${$state})`);
+  check("choosing multiplayer goes to the lobby, not into a game",
+        $state === "lobby", `(${$state})`);
+  netDisconnect();
 
   // ── Single player must reach the old title flow untouched ──
   bootGame();
@@ -1034,8 +1037,418 @@ console.log("\n=== 9p. Level data for the server ===");
         "(the server has no business knowing these)");
 }
 
+console.log("\n=== 9q. Talking to the server ===");
+{
+  // A room snapshot in the shape the server actually sends
+  const snapshot = (over = {}) => Object.assign({
+    phase: "running", winner: null, level: 0,
+    cols: 2, rows: 2, world_w: 1600, world_h: 1000,
+    pads: LEVELS[0].pads.map((p, i) => ({ index: i, x: p.x, y: p.y, w: p.w, label: p.label })),
+    players: { me: { name: "ME", lives: 3, score: 0, alive: true } },
+    fares: { f0: { from: 0, to: 1, claimed_by: null } },
+  }, over);
+
+  // Walk a socket all the way to a joined room
+  const handshake = (over) => {
+    netDisconnect();
+    sockets.length = 0;
+    netConnect("testroom");
+    const ws = sockets[sockets.length - 1];
+    ws.open();
+    const join = ws.lastOf("phx_join");
+    ws.deliver([join[0], join[1], join[2], "phx_reply", {
+      status: "ok",
+      response: { player_id: "me", schema: 1, state: snapshot(over) },
+    }]);
+    return ws;
+  };
+
+  netDisconnect();
+  sockets.length = 0;
+
+  check("nothing is connected to start with", $netState === "idle", `(${$netState})`);
+
+  netConnect("testroom");
+  const ws = sockets[sockets.length - 1];
+  check("connecting opens exactly one socket", sockets.length === 1, `(${sockets.length})`);
+  check("the url is derived from where the page is served",
+        ws.url.startsWith("ws://game.test/socket/websocket"), `(${ws.url})`);
+  check("the protocol version is pinned", ws.url.includes("vsn=2.0.0"), `(${ws.url})`);
+  check("it reports itself as connecting", $netState === "connecting", `(${$netState})`);
+
+  ws.open();
+  check("opening sends a join", !!ws.lastOf("phx_join"), `(${JSON.stringify(ws.frames())})`);
+  check("it joins the room it was asked for",
+        ws.lastOf("phx_join")[2] === "room:testroom", `(${ws.lastOf("phx_join")[2]})`);
+  check("it waits for the reply before calling itself joined",
+        $netState === "joining", `(${$netState})`);
+
+  const join = ws.lastOf("phx_join");
+  ws.deliver([join[0], join[1], join[2], "phx_reply", {
+    status: "ok",
+    response: { player_id: "me", schema: 1, state: snapshot() },
+  }]);
+  check("the join reply completes the handshake", $netState === "joined", `(${$netState})`);
+  check("it remembers its own id", $myPlayerId === "me", `(${$myPlayerId})`);
+  check("and keeps the room state", $roomState && $roomState.world_w === 1600,
+        `(${JSON.stringify($roomState && $roomState.world_w)})`);
+
+  // ── A refused join must not look like a connected one ──
+  netDisconnect();
+  sockets.length = 0;
+  netConnect("bad room");
+  const bad = sockets[sockets.length - 1];
+  bad.open();
+  const badJoin = bad.lastOf("phx_join");
+  bad.deliver([badJoin[0], badJoin[1], badJoin[2], "phx_reply", {
+    status: "error", response: { reason: "bad_room_name" },
+  }]);
+  check("a refused join lands in failed, not joined", $netState === "failed", `(${$netState})`);
+  check("and the reason is kept, ready to be shown",
+        $netError === "BAD_ROOM_NAME", `(${$netError})`);
+
+  // ── A dropped socket must be visible, not silently pretended away ──
+  const dropped = handshake();
+  dropped.close();
+  check("a closed socket ends the session", $netState === "closed", `(${$netState})`);
+
+  // ── Remote players ──
+  const w = handshake({
+    players: {
+      me:    { name: "ME",   lives: 3, score: 0, alive: true },
+      other: { name: "THEM", lives: 3, score: 0, alive: true },
+    },
+  });
+  check("the other player is picked up from the state",
+        $remotes.has("other"), `(${[...$remotes.keys()]})`);
+  check("but not myself — my own taxi is simulated, not received",
+        !$remotes.has("me"), `(${[...$remotes.keys()]})`);
+
+  w.deliver([null, null, "room:testroom", "pos",
+             { id: "other", x: 400, y: 300, vx: 1, vy: 0, a: 0, g: 1, t: 0 }]);
+  const other = $remotes.get("other");
+  check("a position update is taken", other.tx === 400 && other.ty === 300,
+        `(${other.tx},${other.ty})`);
+  check("the first update snaps rather than gliding in from nowhere",
+        other.x === 400 && other.y === 300, `(${other.x},${other.y})`);
+
+  w.deliver([null, null, "room:testroom", "pos",
+             { id: "other", x: 500, y: 300, vx: 1, vy: 0, a: 0, g: 1, t: 0 }]);
+  check("a later update is a target, not a jump",
+        other.x > 400 && other.x < 500, `(x=${other.x})`);
+  const before = other.x;
+  updateRemotes();
+  check("and the drawn position closes on it",
+        other.x > before && other.x <= 500, `(${before} -> ${other.x})`);
+
+  // ── My own position goes out, but not on every frame ──
+  $level = 0; $lives = 99; $state = "playing"; initLevel();
+  $taxi.x = 111; $taxi.y = 222;
+  w.sent.length = 0;
+  for (let i = 0; i < 60; i++) netTick();
+  const posFrames = w.frames().filter(f => f[3] === "pos");
+  check("positions are sent at about 15 Hz, not 60",
+        posFrames.length >= 12 && posFrames.length <= 18,
+        `(${posFrames.length} in 60 frames)`);
+  check("the position sent is the taxi's own",
+        posFrames.length > 0 && posFrames[0][4].x === 111, `(${JSON.stringify(posFrames[0])})`);
+
+  // ── Heartbeat, or an idle socket gets cut by the ingress ──
+  w.sent.length = 0;
+  for (let i = 0; i < 60 * 31; i++) netHeartbeat();
+  const beats = w.frames().filter(f => f[3] === "heartbeat");
+  check("a heartbeat goes out inside the 60s ingress window",
+        beats.length >= 1, `(${beats.length} in 31s)`);
+  check("the heartbeat uses the phoenix topic",
+        beats.length > 0 && beats[0][2] === "phoenix", `(${beats[0] && beats[0][2]})`);
+
+  // It must not depend on the simulation running: update() bails out in every
+  // state but "playing", and those quiet stretches are the whole reason the
+  // heartbeat exists. A wrecked player left waiting loses the socket otherwise.
+  for (const idle of ["crashed", "levelComplete", "gameOver"]) {
+    $state = idle;
+    w.sent.length = 0;
+    for (let i = 0; i < 60 * 31; i++) { update(); netHeartbeat(); }
+    check(`the heartbeat survives "${idle}"`,
+          w.frames().some(f => f[3] === "heartbeat"),
+          `(${JSON.stringify(w.frames().map(f => f[3]))})`);
+  }
+  $state = "playing";
+
+  netDisconnect();
+  sockets.length = 0;
+  $level = 0; $lives = 99; $state = "playing"; initLevel();
+}
+
+console.log("\n=== 9r. Playing online ===");
+{
+  const padsOf = li => LEVELS[li].pads.map((p, i) =>
+    ({ index: i, x: p.x, y: p.y, w: p.w, label: p.label }));
+
+  const snapshot = (over = {}) => Object.assign({
+    phase: "running", winner: null, level: 0,
+    cols: 2, rows: 2, world_w: 1600, world_h: 1000,
+    pads: padsOf(0),
+    players: { me: { name: "ME", lives: 3, score: 0, alive: true } },
+    fares: { f0: { from: 0, to: 1, claimed_by: null } },
+  }, over);
+
+  const goOnline = (over) => {
+    netDisconnect();
+    sockets.length = 0;
+    bootGame();
+    $menuIndex = 1;
+    input.action = true;
+    handleInput();                       // choosing MULTIPLAYER
+    const ws = sockets[sockets.length - 1];
+    ws.open();
+    const join = ws.lastOf("phx_join");
+    ws.deliver([join[0], join[1], join[2], "phx_reply", {
+      status: "ok",
+      response: { player_id: "me", schema: 1, state: snapshot(over) },
+    }]);
+    return ws;
+  };
+
+  // ── The menu now opens a connection instead of apologising ──
+  netDisconnect();
+  sockets.length = 0;
+  bootGame();
+  $menuIndex = 1;
+  input.action = true;
+  handleInput();
+  check("choosing multiplayer opens a connection",
+        sockets.length === 1, `(${sockets.length} sockets)`);
+  check("and shows a lobby while it waits", $state === "lobby", `(${$state})`);
+
+  // ── A server that is not there must not strand the player ──
+  sockets[0].fail();
+  check("a failed connection stays in the lobby to say so",
+        $state === "lobby" && $netState === "failed", `(${$state}/${$netState})`);
+  input.action = true; handleInput();
+  check("and a press gets back to the menu", $state === "menu", `(${$state})`);
+  check("leaving the lobby drops the socket", $netState === "idle", `(${$netState})`);
+
+  // ── A good join starts the game ──
+  const ws = goOnline();
+  check("a successful join starts playing", $state === "playing", `(${$state})`);
+  check("online play uses the world the server sent",
+        $worldW === 1600 && $worldH === 1000, `(${$worldW}x${$worldH})`);
+  check("single player levels are untouched by that",
+        LEVELS[0].cols === 1 && LEVELS[0].rows === 1);
+
+  // ── Fares come from the server, not from the local generator ──
+  check("the server's fare is on the board",
+        $passengers.length === 1 && $passengers[0].fareId === "f0",
+        `(${JSON.stringify($passengers.map(p => p.fareId))})`);
+  check("it stands on the pad the server named",
+        $passengers[0].padIndex === 0, `(${$passengers[0].padIndex})`);
+  check("and is headed where the server said",
+        $passengers[0].destPadIndex === 1, `(${$passengers[0].destPadIndex})`);
+
+  // Two clients must place the same fare in the same spot, or players would
+  // aim at a passenger standing somewhere else on the other screen.
+  const firstX = $passengers[0].x;
+  const w2 = goOnline();
+  check("the stand position is derived from the fare id, so every client agrees",
+        $passengers[0].x === firstX, `(${firstX} vs ${$passengers[0].x})`);
+
+  // ── Picking up asks the server first ──
+  parkOn(0, clearSpotOn(0));
+  w2.sent.length = 0;
+  update();
+  const claim = w2.lastOf("claim");
+  check("landing beside a fare sends a claim", !!claim, `(${JSON.stringify(w2.frames())})`);
+  check("the claim names the server's fare id",
+        claim && claim[4].fare === "f0", `(${JSON.stringify(claim && claim[4])})`);
+  check("boarding waits for the answer",
+        $passengers[0].phase === "claiming", `(${$passengers[0].phase})`);
+
+  w2.sent.length = 0;
+  update();
+  check("and the claim is not sent again while it is pending",
+        !w2.lastOf("claim"), `(${JSON.stringify(w2.frames())})`);
+
+  // Someone else was quicker
+  w2.deliver([null, claim[1], "room:testroom", "phx_reply",
+              { status: "error", response: { reason: "taken" } }]);
+  check("a refused claim takes the fare off this board",
+        $passengers.length === 0 || $passengers[0].phase !== "claiming",
+        `(${JSON.stringify($passengers.map(p => p.phase))})`);
+
+  // ── An accepted claim lets the passenger board ──
+  const w3 = goOnline();
+  parkOn(0, clearSpotOn(0));
+  update();
+  const ok = w3.lastOf("claim");
+  w3.deliver([null, ok[1], "room:testroom", "phx_reply", { status: "ok", response: {} }]);
+  check("an accepted claim starts the passenger walking",
+        $passengers[0].phase === "boarding", `(${$passengers[0].phase})`);
+  for (let i = 0; i < 300 && !$taxi.hasPassenger; i++) update();
+  check("and they get in", $taxi.hasPassenger, `(${$passengers[0].phase})`);
+
+  // ── Delivering reports to the server ──
+  w3.sent.length = 0;
+  parkOn(1);
+  update();
+  const deliver = w3.lastOf("deliver");
+  check("dropping off reports the delivery", !!deliver, `(${JSON.stringify(w3.frames())})`);
+  check("with the fare and the pad",
+        deliver && deliver[4].fare === "f0" && deliver[4].pad === 1,
+        `(${JSON.stringify(deliver && deliver[4])})`);
+
+  // ── Taxi against taxi ──
+  const w4 = goOnline({
+    players: {
+      me:    { name: "ME",   lives: 3, score: 0, alive: true },
+      other: { name: "THEM", lives: 3, score: 0, alive: true },
+    },
+  });
+  $taxi.x = 400; $taxi.y = 300; $taxi.vx = 0; $taxi.vy = 0; $taxi.landed = false;
+  // Far away and slow: nothing to report
+  w4.deliver([null, null, "room:testroom", "pos", { id: "other", x: 900, y: 300 }]);
+  w4.sent.length = 0;
+  update();
+  check("a distant taxi is not a collision", !w4.lastOf("collide"));
+
+  // Touching but barely moving: a nudge at the pad must not cost a life.
+  // Delivered repeatedly, the way the server would at 15 Hz — the drawn
+  // position eases towards its target rather than teleporting, and collisions
+  // are checked against what is drawn.
+  const park = (x, vx) => {
+    for (let i = 0; i < 30; i++) {
+      w4.deliver([null, null, "room:testroom", "pos",
+                  { id: "other", x, y: $taxi.y, vx, vy: 0 }]);
+      updateRemotes();
+    }
+  };
+  $taxi.landed = false;
+  park($taxi.x + 10, 0.1);
+  w4.sent.length = 0;
+  update();
+  check("touching gently is not a collision either",
+        !w4.lastOf("collide"), `(${JSON.stringify(w4.frames())})`);
+
+  // Touching at speed
+  $taxi.landed = false;
+  $taxi.vx = 4;
+  park($taxi.x + 10, -4);
+  w4.sent.length = 0;
+  update();
+  const collide = w4.lastOf("collide");
+  check("a real bump is reported", !!collide, `(${JSON.stringify(w4.frames())})`);
+  check("and it names the other player",
+        collide && collide[4].with === "other", `(${JSON.stringify(collide && collide[4])})`);
+  check("the bump is not reported twice in a row",
+        (() => { w4.sent.length = 0; update(); return !w4.lastOf("collide"); })());
+
+  // ── Lives come from the server, not from the local counter ──
+  const w5 = goOnline();
+  check("lives start from the server's number", $lives === 3, `(${$lives})`);
+  w5.deliver([null, null, "room:testroom", "state",
+              snapshot({ players: { me: { name: "ME", lives: 1, score: 70, alive: true } } })]);
+  check("a server state sets the lives", $lives === 1, `(${$lives})`);
+  check("and the score", $score === 70, `(${$score})`);
+
+  // ── The round ends when the server says so, not when the board is empty ──
+  w5.deliver([null, null, "room:testroom", "state",
+              snapshot({ phase: "over", winner: "me",
+                         players: { me: { name: "ME", lives: 1, score: 500, alive: true } } })]);
+  check("the server ending the round ends it here", $state === "gameOver", `(${$state})`);
+
+  // ── A crash online tells the server ──
+  const w6 = goOnline();
+  w6.sent.length = 0;
+  crash("TEST");
+  check("crashing online reports it", !!w6.lastOf("crashed"), `(${JSON.stringify(w6.frames())})`);
+  check("but the local life counter does not also drop it",
+        $lives === 3, `(${$lives})`);
+  check("crashing leaves the wreck state, not game over",
+        $state === "crashed", `(${$state})`);
+
+  // The state that follows the crash is the one carrying the life it cost, so
+  // it has to be taken while wrecked — not only while flying.
+  w6.deliver([null, null, "room:testroom", "state",
+              snapshot({ players: { me: { name: "ME", lives: 2, score: 0, alive: true } } })]);
+  check("the life the server took is applied while wrecked",
+        $lives === 2, `(${$lives})`);
+
+  // And a player with no lives waits for the round rather than being ejected
+  w6.deliver([null, null, "room:testroom", "state",
+              snapshot({ players: { me: { name: "ME", lives: 0, score: 0, alive: false } } })]);
+  check("running out of lives does not end the round on its own",
+        $state === "crashed" && $lives === 0, `(${$state}/${$lives})`);
+  w6.deliver([null, null, "room:testroom", "state",
+              snapshot({ phase: "over", winner: "other",
+                         players: { me: { name: "ME", lives: 0, score: 0, alive: false } } })]);
+  check("the round ending gets them out of the wreck screen",
+        $state === "gameOver", `(${$state})`);
+
+  // ── The other players have to actually appear on screen ──
+  const w7 = goOnline({
+    players: {
+      me:    { name: "ME",   lives: 3, score: 10, alive: true },
+      other: { name: "THEM", lives: 3, score: 90, alive: true },
+    },
+  });
+  const texts = [];
+  ctxStub.fillText = t => texts.push(String(t));
+  $camera.x = 0; $camera.y = 0;
+
+  texts.length = 0;
+  draw();
+  check("an unseen player is not drawn before their first position",
+        !texts.includes("THEM"), `(${JSON.stringify(texts)})`);
+
+  w7.deliver([null, null, "room:testroom", "pos",
+              { id: "other", x: 300, y: 200, g: 1, t: 1 }]);
+  texts.length = 0;
+  draw();
+  check("once positioned, the other taxi is labelled with its pilot",
+        texts.includes("THEM"), `(${JSON.stringify(texts)})`);
+  check("the standings show both players and their scores",
+        texts.some(t => t === "ME 10") && texts.some(t => t === "THEM 90"),
+        `(${JSON.stringify(texts)})`);
+  check("the offline fare counter is replaced, not stacked on top",
+        !texts.some(t => t.startsWith("FARES:")), `(${JSON.stringify(texts)})`);
+
+  // A player who is out must stop being drawn as a flying taxi
+  w7.deliver([null, null, "room:testroom", "state",
+              snapshot({ players: {
+                me:    { name: "ME",   lives: 3, score: 10, alive: true },
+                other: { name: "THEM", lives: 0, score: 90, alive: false },
+              } })]);
+  texts.length = 0;
+  draw();
+  check("a player who is out is no longer flying around",
+        !texts.includes("THEM"), `(${JSON.stringify(texts)})`);
+  check("but is still listed, marked out",
+        texts.some(t => t === "THEM 90 OUT"), `(${JSON.stringify(texts)})`);
+
+  // ── Single player must be completely unaffected ──
+  netDisconnect();
+  sockets.length = 0;
+  bootGame();
+  $menuIndex = 0;
+  input.action = true; handleInput();     // SINGLE PLAYER
+  check("single player opens no socket", sockets.length === 0, `(${sockets.length})`);
+  input.action = true; handleInput();     // start
+  check("and still starts a normal run",
+        $state === "playing" && $lives === 3 && $level === 0,
+        `(${$state}/${$lives}/${$level})`);
+  check("with a locally generated fare",
+        $passengers.length > 0 && $passengers[0].fareId === undefined,
+        `(${$passengers[0] && $passengers[0].fareId})`);
+  check("crashing offline still costs a local life",
+        (() => { crash("TEST"); return $lives === 2; })(), `(${$lives})`);
+
+  netDisconnect();
+  sockets.length = 0;
+  $level = 0; $lives = 99; $state = "playing"; initLevel();
+}
+
 console.log("\n=== 10. draw() survives every state ===");
-for (const s of ["menu", "title", "playing", "crashed", "levelComplete", "gameOver", "win"]) {
+for (const s of ["menu", "lobby", "title", "playing", "crashed", "levelComplete", "gameOver", "win"]) {
   $state = s;
   let threw = null;
   try { draw(); } catch (e) { threw = e.message; }

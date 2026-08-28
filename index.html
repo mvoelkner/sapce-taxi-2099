@@ -722,6 +722,7 @@ const MENU_ENTRIES = ["SINGLE PLAYER", "MULTIPLAYER"];
 let menuIndex = 0;
 let menuNavLatched = false;   // a held stick must move the cursor once, not per frame
 let menuNotice = "";
+let playerName = "PILOT";
 let level = 0;
 let score = 0;
 let lives = 3;
@@ -947,6 +948,380 @@ const forcedSeed = (() => {
   } catch (e) { return null; }
 })();
 
+// ── Network ─────────────────────────────────────────────────
+// The Phoenix channel protocol, spoken by hand. The official client is an npm
+// package, and this game has no build step and ships as one file — so instead
+// of pulling in a bundler for it, the wire format is written out here. It is
+// small: every frame is [join_ref, ref, topic, event, payload].
+//
+// Only what has to agree between players goes through here. The taxi is still
+// simulated locally and without delay, which is the whole reason the controls
+// feel the same online as they do alone.
+const NET_POS_EVERY = 4;         // simulation steps between position sends: 15 Hz
+const NET_HEARTBEAT_EVERY = 60 * 25;   // 25s; the ingress cuts idle sockets at 60
+const REMOTE_SMOOTH = 0.25;      // how fast a remote taxi closes on its target
+
+let socket = null;
+let netState = "idle";           // idle | connecting | joining | joined | failed | closed
+let netError = "";
+let netRoom = "";
+let netRef = 0;
+let netJoinRef = null;
+let netPosTick = 0;
+let netBeatTick = 0;
+let myPlayerId = null;
+let roomState = null;
+const remotes = new Map();       // player id -> interpolated taxi
+
+function netUrl() {
+  try {
+    const forced = new URLSearchParams(location.search).get("server");
+    if (forced) return forced;
+    // Opened by double-click there is no host to derive anything from, so fall
+    // back to a server running locally.
+    if (location.protocol === "file:") return "ws://localhost:4000/socket/websocket";
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    return scheme + "//" + location.host + "/socket/websocket";
+  } catch (e) {
+    return "ws://localhost:4000/socket/websocket";
+  }
+}
+
+function netTopic() { return "room:" + netRoom; }
+
+function netSend(topic, event, payload, joinRef) {
+  if (!socket || socket.readyState !== 1) return null;
+  const ref = String(++netRef);
+  socket.send(JSON.stringify([joinRef === undefined ? netJoinRef : joinRef,
+                              ref, topic, event, payload]));
+  return ref;
+}
+
+function netConnect(room) {
+  netDisconnect();
+  netRoom = room;
+  netError = "";
+  netState = "connecting";
+  remotes.clear();
+  roomState = null;
+  myPlayerId = null;
+  netPosTick = 0;
+  netBeatTick = 0;
+
+  const url = netUrl() + "?vsn=2.0.0&name=" + encodeURIComponent(playerName);
+  try {
+    socket = new WebSocket(url);
+  } catch (e) {
+    netState = "failed";
+    netError = "NO CONNECTION";
+    return;
+  }
+
+  socket.onopen = () => {
+    netState = "joining";
+    netJoinRef = String(++netRef);
+    socket.send(JSON.stringify([netJoinRef, netJoinRef, netTopic(), "phx_join", {}]));
+  };
+  socket.onmessage = e => {
+    let frame;
+    try { frame = JSON.parse(e.data); } catch (err) { return; }
+    netReceive(frame);
+  };
+  socket.onerror = () => {
+    if (netState !== "joined") { netState = "failed"; netError = "NO CONNECTION"; }
+  };
+  socket.onclose = () => {
+    // Only a session that got somewhere counts as closed; one that never
+    // connected stays "failed", so the screen can say which it was.
+    netState = netState === "joined" ? "closed" : (netState === "failed" ? "failed" : "failed");
+    if (!netError) netError = "CONNECTION LOST";
+  };
+}
+
+function netDisconnect() {
+  if (socket) {
+    socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+    try { socket.close(); } catch (e) {}
+  }
+  socket = null;
+  netState = "idle";
+  netError = "";
+  netJoinRef = null;
+  remotes.clear();
+  roomState = null;
+  myPlayerId = null;
+}
+
+function netReceive([joinRef, ref, topic, event, payload]) {
+  if (event === "phx_reply") {
+    if (pendingClaims.has(ref)) {
+      resolveClaim(ref, payload && payload.status === "ok");
+      return;
+    }
+    if (ref === netJoinRef) {
+      if (payload && payload.status === "ok") {
+        netState = "joined";
+        myPlayerId = payload.response.player_id;
+        applyRoomState(payload.response.state);
+        // Start straight away rather than waiting for a keypress: the player
+        // already chose multiplayer, and the lobby is a wait, not a menu.
+        if (state === "lobby") startOnlineRun();
+      } else {
+        netState = "failed";
+        netError = ((payload && payload.response && payload.response.reason) ||
+                    "REFUSED").toUpperCase();
+      }
+    }
+    return;
+  }
+  if (event === "state") applyRoomState(payload);
+  else if (event === "pos") applyRemotePos(payload);
+}
+
+function applyRoomState(next) {
+  if (!next) return;
+  roomState = next;
+  // Drop whoever left. Adding is left to the position updates: a player with no
+  // position yet has nothing to draw anyway.
+  for (const id of [...remotes.keys()]) {
+    if (!next.players || !next.players[id]) remotes.delete(id);
+  }
+  for (const id of Object.keys(next.players || {})) {
+    if (id === myPlayerId || remotes.has(id)) continue;
+    remotes.set(id, {
+      id, x: 0, y: 0, tx: 0, ty: 0, seen: false,
+      vx: 0, vy: 0, angle: 0, gear: 0, thrust: 0, w: 32, h: 18,
+    });
+  }
+
+  // Only once a level is standing — the join reply arrives before it exists.
+  // Not gated on "playing": the state that follows a crash is exactly the one
+  // carrying the life it cost, and ignoring it there would lose the count.
+  if (pads.length && (state === "playing" || state === "crashed")) {
+    applyServerPlayers();
+    syncFaresFromServer();
+  }
+}
+
+function applyRemotePos(p) {
+  if (!p || !p.id || p.id === myPlayerId) return;
+  let r = remotes.get(p.id);
+  if (!r) {
+    r = { id: p.id, x: p.x, y: p.y, tx: p.x, ty: p.y, seen: false,
+          vx: 0, vy: 0, angle: 0, gear: 0, thrust: 0, w: 32, h: 18 };
+    remotes.set(p.id, r);
+  }
+  r.tx = p.x;
+  r.ty = p.y;
+  r.vx = p.vx || 0;
+  r.vy = p.vy || 0;
+  r.angle = p.a || 0;
+  r.gear = p.g || 0;
+  r.thrust = p.t || 0;
+  // The first sighting snaps. Anything else would have the taxi slide in from
+  // the origin, across the whole world.
+  if (!r.seen) { r.x = p.x; r.y = p.y; r.seen = true; }
+  else {
+    // One step of the smoothing is taken here rather than waiting for the next
+    // frame, so a fresh update is visible immediately.
+    r.x += (r.tx - r.x) * REMOTE_SMOOTH;
+    r.y += (r.ty - r.y) * REMOTE_SMOOTH;
+  }
+}
+
+// Positions arrive at 15 Hz and the screen runs at 60, so the gaps are filled
+// by easing towards the last known target. Not dead reckoning: extrapolating
+// along vx/vy overshoots every time a player stops, and a taxi that slides past
+// a pad and back looks worse than one that arrives a frame late.
+function updateRemotes() {
+  for (const r of remotes.values()) {
+    r.x += (r.tx - r.x) * REMOTE_SMOOTH;
+    r.y += (r.ty - r.y) * REMOTE_SMOOTH;
+  }
+}
+
+function netActive() { return netState === "joined"; }
+
+// Positions, from the simulation step — there is nothing to report about a
+// taxi that is not moving because the game is not running.
+function netTick() {
+  if (!netActive() || !taxi) return;
+
+  if (++netPosTick >= NET_POS_EVERY) {
+    netPosTick = 0;
+    netSend(netTopic(), "pos", {
+      x: Math.round(taxi.x * 10) / 10,
+      y: Math.round(taxi.y * 10) / 10,
+      vx: Math.round(taxi.vx * 100) / 100,
+      vy: Math.round(taxi.vy * 100) / 100,
+      a: Math.round(taxi.angle * 100) / 100,
+      g: Math.round(taxi.gear * 100) / 100,
+      t: taxi.thrustUp ? 1 : 0,
+    });
+  }
+}
+
+// The heartbeat, from the frame loop rather than the simulation step. update()
+// returns immediately unless the state is "playing", so a heartbeat living
+// there stops the moment a player is wrecked, waiting on a level or sitting in
+// the lobby — and the socket is dropped 45s later, in exactly the quiet
+// stretches it exists to survive.
+function netHeartbeat() {
+  if (!netActive()) return;
+  if (++netBeatTick >= NET_HEARTBEAT_EVERY) {
+    netBeatTick = 0;
+    netSend("phoenix", "heartbeat", {}, null);
+  }
+}
+
+// ── Server-owned game state ─────────────────────────────────
+// Lives, score and the end of the round belong to the server, so online they
+// are copied in rather than counted here. The fares are the same story: the
+// local board generates nothing while online, it mirrors what the room holds.
+function applyServerPlayers() {
+  if (!roomState || !roomState.players || !myPlayerId) return;
+  const me = roomState.players[myPlayerId];
+  if (me) {
+    lives = me.lives;
+    score = me.score;
+  }
+  // A player with no lives left waits for the round to end rather than being
+  // thrown out: the room finishes when everyone is out or someone wins.
+  if (roomState.phase === "over" && state !== "gameOver") {
+    state = "gameOver";
+    sndSad();
+  }
+}
+
+// Every client has to put a passenger in the same spot, or two players aim at
+// figures standing somewhere else on each other's screens. The fare id is the
+// only thing both sides agree on, so the position is derived from it rather
+// than rolled — the seeded RNG is per-run and would not match.
+function fareHash(id) {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % 1000) / 1000;
+}
+
+function serverStandX(pad, fareId) {
+  const span = pad.w * 0.32;
+  const t = fareHash(fareId);
+  const left = t < 0.5;
+  const along = (t * 2 % 1) * span;
+  return left ? pad.x + PERSON_MARGIN + along
+              : pad.x + pad.w - PERSON_MARGIN - along;
+}
+
+// ── Claiming a fare over the wire ───────────────────────────
+// The reply decides whether the passenger walks or vanishes, so the ref is kept
+// and matched. Without that a refusal would be indistinguishable from silence.
+const pendingClaims = new Map();     // reply ref -> fare id
+
+function claimFromServer(p) {
+  const ref = netSend(netTopic(), "claim", { fare: p.fareId });
+  if (ref === null) {
+    // Nothing went out, so nothing will come back. Put them back on the pad
+    // rather than leaving a passenger frozen mid-claim forever.
+    p.phase = "waiting";
+    if (taxi.fareClaim === p.index) taxi.fareClaim = -1;
+    return;
+  }
+  pendingClaims.set(ref, p.fareId);
+}
+
+function resolveClaim(ref, ok) {
+  const fareId = pendingClaims.get(ref);
+  if (fareId === undefined) return;
+  pendingClaims.delete(ref);
+
+  const idx = passengers.findIndex(p => p.fareId === fareId);
+  if (idx === -1) return;
+  const p = passengers[idx];
+  if (p.phase !== "claiming") return;
+
+  if (ok) {
+    p.phase = "boarding";
+  } else {
+    // Someone else got there first. They are in another taxi now.
+    if (taxi.fareClaim === p.index) taxi.fareClaim = -1;
+    passengers.splice(idx, 1);
+    addMessage("TOO SLOW!", taxi.x + taxi.w/2, taxi.y - 20, C.lightRed, 60);
+  }
+}
+
+// ── Taxi against taxi ───────────────────────────────────────
+// Detected locally by whoever notices it, then reported; the server settles it
+// for both. A minimum closing speed keeps a slow drift together at a pad from
+// costing two lives, which is the difference between a collision and parking.
+const COLLIDE_MIN_REL_V = 1.5;
+const COLLIDE_COOLDOWN = 60;         // frames before the same pair counts again
+const collideCooldown = new Map();   // player id -> frames left
+
+function updateRemoteCollisions() {
+  for (const [id, left] of collideCooldown) {
+    if (left <= 1) collideCooldown.delete(id);
+    else collideCooldown.set(id, left - 1);
+  }
+  if (!taxi || taxi.landed) return;
+
+  for (const r of remotes.values()) {
+    if (!r.seen || collideCooldown.has(r.id)) continue;
+    if (!rectOverlap({ x: taxi.x, y: taxi.y, w: taxi.w, h: taxi.h },
+                     { x: r.x, y: r.y, w: r.w, h: r.h })) continue;
+
+    const dvx = taxi.vx - r.vx;
+    const dvy = taxi.vy - r.vy;
+    if (Math.sqrt(dvx*dvx + dvy*dvy) < COLLIDE_MIN_REL_V) continue;
+
+    collideCooldown.set(r.id, COLLIDE_COOLDOWN);
+    netSend(netTopic(), "collide", { with: r.id });
+    // Shown at once; the life itself arrives with the server's next state.
+    spawnExplosion(taxi.x + taxi.w/2, taxi.y + taxi.h/2);
+    sndExplosion() || sndCrash();
+    vibrate([60, 40, 120]);
+    addMessage("BANG!", taxi.x + taxi.w/2, taxi.y - 20, C.lightRed, 60);
+  }
+}
+
+// Mirror the room's fare list onto the local board. Fares someone else has
+// claimed leave this board entirely: their passenger is in another taxi.
+function syncFaresFromServer() {
+  if (!roomState || !roomState.fares || !pads.length) return;
+  const wanted = roomState.fares;
+
+  for (let i = passengers.length - 1; i >= 0; i--) {
+    const p = passengers[i];
+    const f = wanted[p.fareId];
+    const mine = f && f.claimed_by === myPlayerId;
+    // Keep whoever is already in the taxi: the server drops a delivered fare
+    // from the list, and removing the passenger mid-ride would strand the taxi
+    // with hasPassenger set and nobody to hand over.
+    if (p.phase === "aboard") continue;
+    if (!f || (f.claimed_by && !mine)) passengers.splice(i, 1);
+  }
+
+  for (const id of Object.keys(wanted)) {
+    const f = wanted[id];
+    if (f.claimed_by && f.claimed_by !== myPlayerId) continue;
+    if (passengers.some(p => p.fareId === id)) continue;
+    if (!pads[f.from] || !pads[f.to]) continue;
+    passengers.push({
+      fareId: id,
+      padIndex: f.from,
+      destPadIndex: f.to,
+      x: serverStandX(pads[f.from], id),
+      phase: "waiting",
+      active: true,
+      heyTimer: 0,
+      heyCount: 0,
+      index: passengers.length,
+    });
+  }
+}
+
 // ── Route generation ────────────────────────────────────────
 // Independent random pairs: every fare rolls its own pickup and destination
 // pad, so the taxi regularly has to fly an empty leg to the next pickup.
@@ -1086,16 +1461,25 @@ function initLevel() {
   rngState = (runSeed + Math.imul(++initCount, 0x9E3779B9)) | 0;
 
   const lvl = LEVELS[level];
-  worldW = (lvl.cols || 1) * SECTOR_W;
-  worldH = (lvl.rows || 1) * SECTOR_H;
+  // Online the world size comes from the room: it grows with the player count,
+  // which the client has no way of knowing on its own.
+  worldW = netActive() && roomState ? roomState.world_w : (lvl.cols || 1) * SECTOR_W;
+  worldH = netActive() && roomState ? roomState.world_h : (lvl.rows || 1) * SECTOR_H;
   buildStarField();
 
   taxi = createTaxi();
   pads = lvl.pads.map(p => ({ ...p }));
-  // Every fare starts queued; fillFareBoard puts out as many as the policy
-  // allows, so the placement roll happens at activation time for all of them.
-  passengers = Array.from({ length: lvl.fares }, (_, i) => makeFare(i, pads.length));
-  fillFareBoard();
+  if (netActive()) {
+    // The room owns the fares. Generating any here would put passengers on this
+    // screen that no other player can see.
+    passengers = [];
+    syncFaresFromServer();
+  } else {
+    // Every fare starts queued; fillFareBoard puts out as many as the policy
+    // allows, so the placement roll happens at activation time for all of them.
+    passengers = Array.from({ length: lvl.fares }, (_, i) => makeFare(i, pads.length));
+    fillFareBoard();
+  }
   obstacles = lvl.obstacles.map(o => ({ ...o }));
   particles = [];
   messages = [];
@@ -1262,12 +1646,17 @@ function update() {
   }
 
   // ─ Passenger logic ─
-  updateFareBoard();
+  // Online the room hands out fares; the local board would only invent extras
+  // that nobody else can see.
+  if (netActive()) { netTick(); updateRemoteCollisions(); }
+  else updateFareBoard();
 
   for (const p of passengers) {
     if (p.phase === "delivered") continue;
 
     if (p.phase === "queued") continue;   // the fare board decides when it is put out
+    // Waiting on the server to say whether this fare is ours
+    if (p.phase === "claiming") continue;
 
     const pad = pads[p.padIndex];
 
@@ -1297,8 +1686,17 @@ function update() {
       // server's first-come-first-served rule.
       if (taxi.landed && taxi.landedPad === p.padIndex &&
           !taxi.hasPassenger && taxi.fareClaim === -1) {
-        p.phase = "boarding";
-        taxi.fareClaim = p.index;
+        if (netActive()) {
+          // Online the room settles who gets the fare, so ask before letting
+          // anyone walk. Two players landing at once both see them standing
+          // there; only one gets an ok back.
+          p.phase = "claiming";
+          taxi.fareClaim = p.index;
+          claimFromServer(p);
+        } else {
+          p.phase = "boarding";
+          taxi.fareClaim = p.index;
+        }
       }
     }
 
@@ -1322,7 +1720,7 @@ function update() {
           sndPickup();
           const destPad = pads[p.destPadIndex];
           addMessage("TO PAD " + destPad.label + "!", taxi.x + taxi.w/2, taxi.y - 20, C.padGreen, 90);
-          score += 10;
+          if (!netActive()) score += 10;   // online the server scores the pickup
         }
       }
     }
@@ -1335,8 +1733,12 @@ function update() {
         taxi.passengerDest = -1;
         sndDropoff();
         addMessage("$" + 50 + " TIP!", taxi.x + taxi.w/2, taxi.y - 20, C.padGreen, 60);
-        score += 50;
         totalPassengersDelivered++;
+        // Online the score is the server's to keep; it arrives with the next
+        // state. Adding here as well would double it until that lands.
+        if (netActive()) netSend(netTopic(), "deliver",
+                                 { fare: p.fareId, pad: p.destPadIndex });
+        else score += 50;
       }
     }
   }
@@ -1363,6 +1765,13 @@ function loseLife(reason) {
   crashReason = reason;
   rumbling = false;
   rumbleTick = 0;
+  if (netActive()) {
+    // The room counts lives, so report and wait. Decrementing here as well
+    // would take two off for one wreck as soon as the state comes back.
+    netSend(netTopic(), "crashed", { reason });
+    state = "crashed";
+    return;
+  }
   lives--;
   state = lives <= 0 ? "gameOver" : "crashed";
 }
@@ -1474,6 +1883,10 @@ function draw() {
     drawMenu();
     return;
   }
+  if (state === "lobby") {
+    drawLobby();
+    return;
+  }
   if (state === "title") {
     drawTitle();
     return;
@@ -1562,6 +1975,10 @@ function draw() {
     }
   }
 
+  // Other players, under the local taxi: when two overlap, the one being
+  // steered has to stay the readable one.
+  drawRemotes();
+
   // Taxi
   if (state === "playing" || state === "levelComplete") {
     drawTaxi();
@@ -1600,6 +2017,83 @@ function draw() {
   }
   if (state === "levelComplete") {
     drawOverlay("LEVEL COMPLETE!", actionHint("CONTINUE"), C.padGreen);
+  }
+}
+
+// Who is where. Only the top few: at ten players a full list would cover the
+// world the player is trying to fly through.
+const STANDINGS_SHOWN = 4;
+
+function drawStandings() {
+  const players = (roomState && roomState.players) || {};
+  const ranked = Object.keys(players)
+    .map(id => ({ id, ...players[id] }))
+    .sort((a, b) => b.score - a.score);
+
+  ctx.font = "7px 'Press Start 2P'";
+  ctx.textAlign = "left";
+  let y = 36;
+  for (const p of ranked.slice(0, STANDINGS_SHOWN)) {
+    const mine = p.id === myPlayerId;
+    ctx.fillStyle = mine ? C.hotYellow : (p.alive ? remoteColor(p.id) : C.darkGrey);
+    ctx.fillText(`${p.name} ${p.score}` + (p.alive ? "" : " OUT"), 10, y);
+    y += 11;
+  }
+  if (ranked.length > STANDINGS_SHOWN) {
+    ctx.fillStyle = C.lightGrey;
+    ctx.fillText(`+${ranked.length - STANDINGS_SHOWN} MORE`, 10, y);
+  }
+}
+
+// Other players' taxis. Deliberately not the same sprite: in a crowd the one
+// you are steering has to be findable at a glance, so these are flatter, in a
+// colour of their own, and carry a name.
+const REMOTE_COLORS = [C.hotOrange, C.padGreen, C.skyBlue, C.lightBlue,
+                       C.lightGreen, C.cyan, C.lightRed, C.purple];
+
+function remoteColor(id) {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return REMOTE_COLORS[Math.abs(h) % REMOTE_COLORS.length];
+}
+
+function drawRemotes() {
+  if (!remotes.size) return;
+  const players = (roomState && roomState.players) || {};
+
+  for (const r of remotes.values()) {
+    if (!r.seen) continue;                      // never heard a position yet
+    const info = players[r.id];
+    if (info && info.alive === false) continue; // out of the round
+
+    const color = remoteColor(r.id);
+
+    ctx.fillStyle = color;
+    ctx.fillRect(r.x + 2, r.y + 4, r.w - 4, r.h - 6);
+    ctx.fillStyle = C.black;
+    ctx.fillRect(r.x + 2, r.y + 10, r.w - 4, 2);
+    ctx.fillStyle = C.skyBlue;
+    ctx.fillRect(r.x + 8, r.y, 16, 6);
+
+    // Gear, so a landing looks like one from across the map
+    if (r.gear > 0.05) {
+      ctx.fillStyle = C.lightGrey;
+      const drop = GEAR_LEN * r.gear;
+      ctx.fillRect(r.x + 5, r.y + r.h, 3, drop);
+      ctx.fillRect(r.x + r.w - 8, r.y + r.h, 3, drop);
+    }
+
+    if (r.thrust) {
+      ctx.fillStyle = C.hotOrange;
+      ctx.fillRect(r.x + r.w/2 - 3, r.y + r.h, 6, 5);
+    }
+
+    if (info && info.name) {
+      ctx.font = "6px 'Press Start 2P'";
+      ctx.fillStyle = color;
+      ctx.textAlign = "center";
+      ctx.fillText(info.name, r.x + r.w/2, r.y - 6);
+    }
   }
 }
 
@@ -1808,13 +2302,18 @@ function drawHUD() {
   ctx.textAlign = "center";
   ctx.fillText("FUEL", VIEW_W - 58, barY + barH);
 
-  // Passenger indicator
-  const delivered = passengers ? passengers.filter(p => p.phase === "delivered").length : 0;
-  const total = passengers ? passengers.length : 0;
-  ctx.font = "8px 'Press Start 2P'";
-  ctx.fillStyle = C.hotYellow;
-  ctx.textAlign = "left";
-  ctx.fillText("FARES: " + delivered + "/" + total, 10, 36);
+  // Passenger indicator. Online the board is refilled forever, so a count out
+  // of a total would be meaningless — the standings replace it.
+  if (netActive()) {
+    drawStandings();
+  } else {
+    const delivered = passengers ? passengers.filter(p => p.phase === "delivered").length : 0;
+    const total = passengers ? passengers.length : 0;
+    ctx.font = "8px 'Press Start 2P'";
+    ctx.fillStyle = C.hotYellow;
+    ctx.textAlign = "left";
+    ctx.fillText("FARES: " + delivered + "/" + total, 10, 36);
+  }
 
   // Speed indicator
   if (taxi) {
@@ -1882,6 +2381,40 @@ function drawMenu() {
   ctx.fillText(isTouchDevice ? "◀ ▶ TO CHOOSE" : "ARROW KEYS TO CHOOSE",
                VIEW_W/2, 410);
   ctx.fillText(actionHint("CONFIRM"), VIEW_W/2, 430);
+}
+
+function drawLobby() {
+  drawStars();
+
+  ctx.font = "16px 'Press Start 2P'";
+  ctx.fillStyle = C.hotYellow;
+  ctx.textAlign = "center";
+  ctx.fillText("MULTIPLAYER", VIEW_W/2, 180);
+
+  ctx.font = "10px 'Press Start 2P'";
+  ctx.fillStyle = C.cyan;
+  ctx.fillText("ROOM " + netRoom.toUpperCase(), VIEW_W/2, 210);
+
+  const failed = netState === "failed" || netState === "closed";
+  ctx.font = "12px 'Press Start 2P'";
+  ctx.fillStyle = failed ? C.lightRed : C.white;
+  const dots = ".".repeat(1 + Math.floor(Date.now() / 400) % 3);
+  ctx.fillText(failed ? (netError || "NO CONNECTION")
+                      : (netState === "joining" ? "JOINING" : "CONNECTING") + dots,
+               VIEW_W/2, 280);
+
+  if (failed) {
+    ctx.font = "9px 'Press Start 2P'";
+    ctx.fillStyle = C.lightGrey;
+    ctx.fillText("IS THE SERVER RUNNING?", VIEW_W/2, 310);
+    ctx.fillText("?server=ws://HOST/socket/websocket", VIEW_W/2, 328);
+  }
+
+  if (Math.sin(Date.now() * 0.005) > 0) {
+    ctx.font = "9px 'Press Start 2P'";
+    ctx.fillStyle = C.hotYellow;
+    ctx.fillText(actionHint("GO BACK"), VIEW_W/2, 400);
+  }
 }
 
 function drawTitle() {
@@ -2042,7 +2575,10 @@ function gameLoop(now) {
                  flying && (taxi.thrustLeft || taxi.thrustRight));
   setThrustHaptics(flying && taxi.thrustUp);
 
-  // Presentation, so it belongs here and not in the simulation step
+  // Outside the simulation step on purpose: both have to keep running in the
+  // states where update() does not.
+  netHeartbeat();
+  updateRemotes();
   updateCamera();
   draw();
 }
@@ -2067,11 +2603,40 @@ function handleMenuInput() {
     state = "title";
     menuNotice = "";
   } else {
-    // The lobby lands here once the server exists. Until then say so plainly
-    // rather than dropping the player into a screen that cannot connect.
-    menuNotice = "NO SERVER YET";
-    sndSad();
+    menuNotice = "";
+    state = "lobby";
+    netConnect(defaultRoom());
   }
+}
+
+// One shared room unless ?room= says otherwise. A room picker would need text
+// entry, which this game has no way to offer on a touch device.
+function defaultRoom() {
+  try {
+    const r = new URLSearchParams(location.search).get("room");
+    if (r && /^[a-zA-Z0-9_-]{1,32}$/.test(r)) return r;
+  } catch (e) {}
+  return "lobby";
+}
+
+function handleLobbyInput() {
+  if (!input.action) return;
+  input.action = false;
+  // Nothing to do here but go back: retrying is choosing multiplayer again.
+  netDisconnect();
+  bootGame();
+}
+
+function startOnlineRun() {
+  level = roomState && typeof roomState.level === "number" ? roomState.level : 0;
+  score = 0;
+  lives = 3;                 // replaced by the server's number on the next state
+  totalPassengersDelivered = 0;
+  pendingClaims.clear();
+  collideCooldown.clear();
+  newRunSeed();
+  initLevel();               // sets state = "playing"
+  applyServerPlayers();
 }
 
 function startRun() {
@@ -2096,7 +2661,8 @@ function bootGame() {
 }
 
 function handleInput() {
-  if (state === "menu") { handleMenuInput(); return; }
+  if (state === "menu")  { handleMenuInput();  return; }
+  if (state === "lobby") { handleLobbyInput(); return; }
 
   if (input.action) {
     input.action = false;

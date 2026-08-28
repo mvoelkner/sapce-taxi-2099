@@ -17,6 +17,10 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   drawEdgeMarkers, edgeMarkerFor, C,
   showExplosion, hideExplosion, sndExplosion, primeExplosionSound,
   farePolicy, handleInput, bootGame, MENU_ENTRIES,
+  netConnect, netDisconnect, netTick, netHeartbeat, updateRemotes, netSend,
+  get $netState(){return netState}, get $netError(){return netError},
+  get $myPlayerId(){return myPlayerId},
+  get $roomState(){return roomState}, get $remotes(){return remotes},
   get $menuIndex(){return menuIndex}, set $menuIndex(v){menuIndex=v},
   get $gameMode(){return gameMode}, set $gameMode(v){gameMode=v},
   get $explosionPrimed(){return explosionPrimed}, set $explosionPrimed(v){explosionPrimed=v},
@@ -180,6 +184,44 @@ function flushTimers() {
 globalThis.performance = { now: () => 0 };
 globalThis.requestAnimationFrame = noop;
 
+// Served over http in tests, so the net layer derives a ws:// URL rather than
+// taking its file:// fallback. forcedSeed reads the same search string and
+// still finds no seed, so the seeded-run tests are unaffected.
+globalThis.location = { protocol: "http:", host: "game.test", search: "" };
+
+// ── WebSocket stub ──────────────────────────────────────────
+// Records what the client sends and lets a test push server frames back in.
+// No timers and no real socket: the handshake is driven explicitly, so a test
+// can sit between any two steps of it.
+const sockets = [];
+class WebSocketStub {
+  constructor(url) {
+    this.url = url;
+    this.sent = [];
+    this.readyState = 0;          // CONNECTING
+    this.onopen = this.onmessage = this.onclose = this.onerror = null;
+    sockets.push(this);
+  }
+  send(data) { this.sent.push(data); }
+  close() {
+    this.readyState = 3;          // CLOSED
+    if (this.onclose) this.onclose({ code: 1000 });
+  }
+  // ── test-side helpers ──
+  open() { this.readyState = 1; if (this.onopen) this.onopen({}); }
+  deliver(frame) {
+    if (this.onmessage) this.onmessage({ data: JSON.stringify(frame) });
+  }
+  fail() { if (this.onerror) this.onerror({}); }
+  frames() { return this.sent.map(JSON.parse); }
+  lastOf(event) { return this.frames().filter(f => f[3] === event).pop(); }
+}
+WebSocketStub.CONNECTING = 0;
+WebSocketStub.OPEN = 1;
+WebSocketStub.CLOSING = 2;
+WebSocketStub.CLOSED = 3;
+globalThis.WebSocket = WebSocketStub;
+
 new Function(js)();
 
 // Shared by the test harness and the level extractor, so both drive the real
@@ -188,4 +230,5 @@ module.exports = {
   ROOT, fs, nodePath,
   ctxStub, canvasStub, explosionStub, explosionSoundStub,
   audioLog, vibrationLog, speechLog, timerQueue, flushTimers, noop,
+  sockets, WebSocketStub,
 };
