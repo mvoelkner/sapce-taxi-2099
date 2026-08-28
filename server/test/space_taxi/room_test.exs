@@ -40,13 +40,31 @@ defmodule SpaceTaxi.RoomTest do
       assert map_size(state.players) == 1
     end
 
-    test "the world grows with the player count", %{room: room} do
+    test "the world never grows past what the level actually contains", %{room: room} do
+      # Level 0 is a one-sector map: every pad sits in the first screen. Handing
+      # out four sectors for it would mean three empty ones, and a player who
+      # drifts into those loses sight of everybody while having nothing to do.
+      # Area and content have to grow together, so until there are multi-sector
+      # levels the grid is capped by the level's own size.
       {:ok, one} = join(room, "a")
       assert {1, 1} == {one.cols, one.rows}
 
       {:ok, _} = join(room, "b")
-      {:ok, four} = join(room, "c")
-      assert {2, 2} == {four.cols, four.rows}
+      {:ok, _} = join(room, "c")
+      {:ok, four} = join(room, "d")
+      assert {1, 1} == {four.cols, four.rows}
+      assert {800, 500} == {four.world_w, four.world_h}
+    end
+
+    test "the grid still follows the head count where a level allows it" do
+      # A hypothetical 3x3 level: the growth mechanism itself is unchanged, it
+      # is only bounded by what the map holds.
+      assert {1, 1} == SpaceTaxi.Room.grid_for(1, {3, 3})
+      assert {2, 2} == SpaceTaxi.Room.grid_for(4, {3, 3})
+      assert {3, 2} == SpaceTaxi.Room.grid_for(7, {3, 3})
+      assert {3, 3} == SpaceTaxi.Room.grid_for(10, {3, 3})
+      # …and capped by a smaller map
+      assert {2, 1} == SpaceTaxi.Room.grid_for(10, {2, 1})
     end
   end
 

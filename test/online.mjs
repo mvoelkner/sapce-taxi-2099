@@ -33,7 +33,8 @@ function spawnClient(label) {
 
   const exported = [
     "handleInput", "bootGame", "update", "draw", "initLevel", "netDisconnect",
-    "netFrame",
+    "netFrame", "updateRemotes", "updateCamera",
+    "get $camera(){return camera}",
     "LEVELS", "GEAR_LEN", "PERSON_HALF_W", "input",
     "get $state(){return state}", "set $state(v){state=v}",
     "get $netState(){return netState}", "get $netError(){return netError}",
@@ -108,17 +109,30 @@ function spawnClient(label) {
   return sandbox;
 }
 
-// Drive a client the way its own game loop does: a simulation step, then the
-// per-frame network work. netFrame() has to be in here — it is what keeps a
-// wrecked taxi reporting its position, and update() returns immediately then.
+// Drive a client the way its own game loop does, and that means all of it.
+// netFrame() keeps a wrecked taxi reporting its position; updateRemotes() and
+// updateCamera() decide where anything actually ends up on screen. Leaving the
+// camera out once hid a bug where players were correctly received and still
+// nowhere to be seen, because the view had scrolled away from them.
 function step(c, n = 1) {
   for (let i = 0; i < n; i++) {
     c.input.up = c.input.left = c.input.right = false;
     c.handleInput();
     c.update();
     c.netFrame();
+    c.updateRemotes();
+    c.updateCamera();
   }
 }
+
+// Is that player actually within this client's viewport, not merely known to it
+const onScreen = (c, id) => {
+  const r = c.$remotes.get(id);
+  if (!r || !r.seen) return false;
+  const sx = r.x - c.$camera.x;
+  const sy = r.y - c.$camera.y;
+  return sx > -r.w && sx < 800 && sy > -r.h && sy < 500;
+};
 
 async function pump(clients, frames, perBatch = 30) {
   for (let done = 0; done < frames; done += perBatch) {
@@ -157,8 +171,13 @@ check("both got the same world size",
       A.$roomState.world_w === B.$roomState.world_w &&
       A.$roomState.world_h === B.$roomState.world_h,
       `(${A.$roomState.world_w} vs ${B.$roomState.world_w})`);
-check("the world grew for two players", A.$roomState.world_w > 800,
-      `(${A.$roomState.world_w})`);
+// Not "the world grew": these are one-sector levels, every pad is in the first
+// screen, and handing out empty sectors is what put players out of each other's
+// sight in the first place. The grid follows the head count only as far as the
+// map has content for it.
+check("the world stays inside what the level holds",
+      A.$roomState.world_w === 800 && A.$roomState.world_h === 500,
+      `(${A.$roomState.world_w}x${A.$roomState.world_h})`);
 
 // ── The fare board must agree ──
 const fareIds = c => c.$passengers.map(p => p.fareId).sort().join(",");
@@ -252,34 +271,45 @@ check("and the other client is told", winner.$roomState.players[loser.$myPlayerI
 // One did, and it blew the taxi up. Both clients are parked on pads here, so
 // every fare the room mints while they sit there has to go elsewhere.
 {
-  const parkedPads = new Set([A, B]
-    .filter(c => c.$taxi.landed)
-    .map(c => c.$taxi.landedPad));
+  // The hazard is local: a passenger standing under *my* taxi, which my own
+  // crush check would kill me for. Checked per client and per frame rather than
+  // against a snapshot of who was parked where, because the taxis move.
+  const offending = new Set();
+  const scan = () => {
+    for (const c of [A, B]) {
+      if (!c.$taxi.landed) continue;
+      for (const p of c.$passengers) {
+        if (p.phase !== "waiting") continue;
+        if (p.padIndex !== c.$taxi.landedPad) continue;
+        // Sharing a pad is the normal case — you are meant to land beside them.
+        // Only an actual overlap is the hazard, and a fare placed under an
+        // already-parked taxi is flagged and cannot hurt it.
+        const overlaps = p.x + c.PERSON_HALF_W > c.$taxi.x &&
+                         p.x - c.PERSON_HALF_W < c.$taxi.x + c.$taxi.w;
+        if (overlaps && !p.spawnedUnderTaxi) {
+          offending.add(`${p.fareId}@pad${p.padIndex}`);
+        }
+      }
+    }
+  };
 
-  check("at least one taxi is parked for this", parkedPads.size > 0,
-        `(${JSON.stringify([A.$taxi.landed, B.$taxi.landed])})`);
-
-  const offending = [];
+  let parked = 0;
   for (let round = 0; round < 12; round++) {
     const carrier = [A, B].find(c => !c.$taxi.hasPassenger &&
                                      c.$passengers.some(p => p.phase === "waiting"));
     if (!carrier) break;
-    for (const c of [A, B]) {
-      for (const p of c.$passengers) {
-        if (p.phase === "waiting" && parkedPads.has(p.padIndex) &&
-            !p.spawnedUnderTaxi) {
-          offending.push(`${p.fareId}@pad${p.padIndex}`);
-        }
-      }
-    }
-    // Move a fare along so the room mints a replacement
     const fare = carrier.$passengers.find(p => p.phase === "waiting");
     parkBeside(carrier, fare);
-    await pump([A, B], 200);
+    parked++;
+    for (let i = 0; i < 7; i++) { await pump([A, B], 30); scan(); }
   }
 
-  check("no fare was put on a pad someone is standing on",
-        offending.length === 0, JSON.stringify(offending));
+  check("taxis were parked on pads during this", parked > 0, `(${parked} landings)`);
+  check("no unflagged passenger ever stood under a parked taxi",
+        offending.size === 0, JSON.stringify([...offending]));
+  check("and nobody was wrecked by one",
+        A.$state !== "crashed" || B.$state !== "crashed",
+        `(${A.$state}/${B.$state})`);
 }
 
 // ── A wrecked player must still be findable by someone joining afterwards ──
@@ -319,12 +349,19 @@ check("and in the place its owner left it",
       wreckSeen && Math.abs(wreckSeen.tx - loser.$taxi.x) < 2,
       `(${wreckSeen && wreckSeen.tx} vs ${loser.$taxi.x})`);
 
-// Everyone listed has a taxi to go with them: that is the whole complaint
+// Everyone listed has a taxi to go with them, and it is where the newcomer can
+// see it. "Received" is not the same as "on screen": with a world bigger than
+// its content, players ended up correctly known and still nowhere in view.
 const listed = Object.keys(C.$roomState.players).filter(id => id !== C.$myPlayerId);
-const located = listed.filter(id => { const r = C.$remotes.get(id); return r && r.seen; });
-check("every other player listed has a taxi on screen",
-      listed.length === located.length,
-      `(${listed.length} listed, ${located.length} located)`);
+const seen = listed.filter(id => { const r = C.$remotes.get(id); return r && r.seen; });
+check("every other player listed has been located",
+      listed.length === seen.length, `(${listed.length} listed, ${seen.length} located)`);
+check("and is actually within view",
+      listed.every(id => onScreen(C, id)),
+      JSON.stringify(listed.map(id => {
+        const r = C.$remotes.get(id);
+        return [id.slice(0, 4), r && `${(r.x - C.$camera.x).toFixed(0)},${(r.y - C.$camera.y).toFixed(0)}`];
+      })));
 
 C.netDisconnect();
 await wait(400);

@@ -31,7 +31,14 @@ defmodule SpaceTaxiWeb.Endpoint do
     at: "/",
     from: :space_taxi,
     gzip: false,
-    only: SpaceTaxiWeb.static_paths()
+    only: SpaceTaxiWeb.static_paths(),
+    # Plug.Static's default is a bare "public", which has no max-age and no
+    # Last-Modified to work from — so browsers fall back to heuristic caching
+    # and serve the page from disk without asking. A player who loaded the game
+    # before a fix then keeps playing the broken version, which is exactly what
+    # happened. must-revalidate makes them ask every time; the etag keeps the
+    # answer a 304 and the cost near zero.
+    cache_control_for_etags: "public, max-age=0, must-revalidate"
 
   # Code reloading can be explicitly enabled under the
   # :code_reloader configuration of your endpoint.

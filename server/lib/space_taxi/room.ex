@@ -425,7 +425,7 @@ defmodule SpaceTaxi.Room do
   defp public(state) do
     level = Levels.get(state.level) || %{cols: 1, rows: 1, world_w: 800, world_h: 500}
 
-    {cols, rows} = grid_for(map_size(state.players))
+    {cols, rows} = grid_for(map_size(state.players), {level.cols, level.rows})
 
     %{
       level: state.level,
@@ -441,7 +441,18 @@ defmodule SpaceTaxi.Room do
     }
   end
 
-  defp grid_for(count) do
-    Enum.find_value(@grids, {3, 3}, fn {upto, grid} -> count <= upto && grid end)
+  @doc """
+  The sector grid for a head count, bounded by what the level actually holds.
+
+  Density is what makes the world feel right, so the grid grows with the number
+  of players — but only as far as the map has content to fill. The five shipped
+  levels are one-sector maps: every pad is in the first screen. Handing out four
+  sectors for one of those gives three empty ones, and a player who drifts into
+  them loses sight of everyone while having nothing to do there. Area and
+  content grow together or not at all.
+  """
+  def grid_for(count, {max_cols, max_rows}) do
+    {cols, rows} = Enum.find_value(@grids, {3, 3}, fn {upto, g} -> count <= upto && g end)
+    {min(cols, max_cols), min(rows, max_rows)}
   end
 end
