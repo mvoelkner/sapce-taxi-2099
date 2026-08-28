@@ -366,6 +366,62 @@ check("and is actually within view",
 C.netDisconnect();
 await wait(400);
 
+// ── One player finishing ends the round for everybody, then the next level ──
+// Driven by delivering fares until the target score falls, so the finish is a
+// real one rather than a state pushed in from the side.
+{
+  // C left the room a few checks ago, so only these two are still in it.
+  const all = [A, B];
+  const before = A.$roomState.level;
+
+  // Ending it by everyone running out of lives rather than by grinding out the
+  // target score: it is the same round-over transition and far cheaper to
+  // reach. The winning path is covered by the room's own suite.
+  const deadline0 = Date.now() + 40000;
+  while (Date.now() < deadline0 &&
+         !all.every(c => c.$state === "intermission")) {
+    for (const c of all) {
+      if (c.$state === "crashed") { c.input.action = true; c.handleInput(); }
+      if (c.$state === "playing") {
+        c.$taxi.landed = false; c.$taxi.landedPad = -1;
+        c.$taxi.y = 30; c.$taxi.vy = 9;      // straight into the ground
+      }
+    }
+    await pump(all, 90);
+  }
+
+  check("the round ends when nobody has lives left",
+        all.every(c => c.$state === "intermission"),
+        JSON.stringify(all.map(c => [c.$state, c.$lives])));
+  check("every client is on the same screen at the same time",
+        new Set(all.map(c => c.$state)).size === 1,
+        JSON.stringify(all.map(c => c.$state)));
+  check("nobody is left on a game-over screen",
+        !all.some(c => c.$state === "gameOver"),
+        JSON.stringify(all.map(c => c.$state)));
+
+  // Nobody presses anything from here on
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline && A.$roomState.level === before) {
+    await pump(all, 60);
+  }
+
+  check("the room moves on to the next level by itself",
+        A.$roomState.level !== before, `(still on ${A.$roomState.level})`);
+  check("and every client follows it there",
+        all.every(c => c.$state === "playing"),
+        JSON.stringify(all.map(c => c.$state)));
+  check("all on the same level",
+        new Set(all.map(c => c.$roomState && c.$roomState.level)).size === 1,
+        JSON.stringify(all.map(c => c.$roomState && c.$roomState.level)));
+  check("with scores back to zero",
+        all.every(c => c.$score === 0),
+        JSON.stringify(all.map(c => c.$score)));
+  check("and everyone flying again, including whoever was out",
+        all.every(c => c.$lives === 3),
+        JSON.stringify(all.map(c => c.$lives)));
+}
+
 // ── Leaving ──
 A.netDisconnect();
 await pump([B], 120);

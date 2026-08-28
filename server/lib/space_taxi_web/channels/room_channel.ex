@@ -150,26 +150,8 @@ defmodule SpaceTaxiWeb.RoomChannel do
   # One snapshot per room per change, rather than a message per player: at ten
   # players the per-player alternative is an order of magnitude more traffic for
   # the same information.
-  defp wire(state) do
-    %{
-      phase: state.phase,
-      winner: state.winner,
-      level: state.level,
-      cols: state.cols,
-      rows: state.rows,
-      world_w: state.world_w,
-      world_h: state.world_h,
-      pads: state.pads,
-      players:
-        Map.new(state.players, fn {id, p} ->
-          {id, %{name: p.name, lives: p.lives, score: p.score, alive: p.alive?}}
-        end),
-      fares:
-        Map.new(state.fares, fn {id, f} ->
-          {id, %{from: f.from, to: f.to, claimed_by: f.claimed_by}}
-        end)
-    }
-  end
+  # One format for the whole system, defined next to the state it describes.
+  defp wire(state), do: Room.wire(state)
 
   defp validate_name(name) do
     if name =~ ~r/^[a-zA-Z0-9_-]{1,32}$/, do: :ok, else: {:error, :bad_room_name}

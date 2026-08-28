@@ -1568,7 +1568,82 @@ console.log("\n=== 9r. Playing online ===");
   w5.deliver([null, null, "room:testroom", "state",
               snapshot({ phase: "over", winner: "me",
                          players: { me: { name: "ME", lives: 1, score: 500, alive: true } } })]);
-  check("the server ending the round ends it here", $state === "gameOver", `(${$state})`);
+  // Not a game over: the room puts the next level up by itself, so the end of
+  // a round is a scoreboard rather than an ending.
+  check("the server ending the round shows the result screen",
+        $state === "intermission", `(${$state})`);
+
+  // ── Finishing a round shows a result screen, then the next level ──
+  const wEnd = goOnline({
+    players: {
+      me:    { name: "ME",   lives: 3, score: 120, alive: true },
+      other: { name: "THEM", lives: 2, score: 500, alive: true },
+    },
+  });
+  check("the round is running to begin with", $state === "playing", `(${$state})`);
+
+  wEnd.deliver([null, null, "room:testroom", "state", snapshot({
+    phase: "over", winner: "other",
+    players: {
+      me:    { name: "ME",   lives: 3, score: 120, alive: true },
+      other: { name: "THEM", lives: 2, score: 500, alive: true },
+    },
+  })]);
+  check("someone finishing ends it for me too, without me losing",
+        $state === "intermission", `(${$state})`);
+  check("and the winner is remembered for the screen",
+        $roundWinner === "other", `(${$roundWinner})`);
+
+  // The screen has to say who won and how it stands
+  const endText = [];
+  ctxStub.fillText = t => endText.push(String(t));
+  endText.length = 0;
+  draw();
+  check("the result screen names the winner",
+        endText.some(t => t.includes("THEM")), `(${JSON.stringify(endText)})`);
+  check("and shows the standings",
+        endText.some(t => t.includes("500")) && endText.some(t => t.includes("120")),
+        `(${JSON.stringify(endText)})`);
+  check("and says the next level is coming",
+        endText.some(t => /NEXT LEVEL/i.test(t)), `(${JSON.stringify(endText)})`);
+
+  // Nobody presses anything: the room moves on and the client follows
+  wEnd.deliver([null, null, "room:testroom", "state", snapshot({
+    phase: "running", winner: null, level: 1,
+    players: {
+      me:    { name: "ME",   lives: 3, score: 0, alive: true },
+      other: { name: "THEM", lives: 3, score: 0, alive: true },
+    },
+  })]);
+  check("the room moving on starts the next level here",
+        $state === "playing", `(${$state})`);
+  check("on the level the room named", $level === 1, `(${$level})`);
+  check("with the pads of that level",
+        $pads.length === LEVELS[1].pads.length &&
+        $pads[0].x === LEVELS[1].pads[0].x,
+        `(${$pads.length} pads at x=${$pads[0] && $pads[0].x})`);
+  check("and a fresh taxi rather than the wreck of the last round",
+        $taxi.landed === false && $taxi.fuel === $taxi.maxFuel,
+        `(landed=${$taxi.landed}, fuel=${$taxi.fuel})`);
+
+  // A player who was out gets to fly again
+  const wDead = goOnline({
+    players: { me: { name: "ME", lives: 0, score: 0, alive: false } },
+  });
+  wDead.deliver([null, null, "room:testroom", "state", snapshot({
+    phase: "over", winner: null,
+    players: { me: { name: "ME", lives: 0, score: 0, alive: false } },
+  })]);
+  check("someone with no lives waits on the same screen",
+        $state === "intermission", `(${$state})`);
+  wDead.deliver([null, null, "room:testroom", "state", snapshot({
+    phase: "running", winner: null, level: 1,
+    players: { me: { name: "ME", lives: 3, score: 0, alive: true } },
+  })]);
+  check("and is back in for the next level",
+        $state === "playing" && $lives === 3, `(${$state}, ${$lives} lives)`);
+
+  delete ctxStub.fillText;
 
   // ── A crash online tells the server ──
   const w6 = goOnline();
@@ -1595,8 +1670,8 @@ console.log("\n=== 9r. Playing online ===");
   w6.deliver([null, null, "room:testroom", "state",
               snapshot({ phase: "over", winner: "other",
                          players: { me: { name: "ME", lives: 0, score: 0, alive: false } } })]);
-  check("the round ending gets them out of the wreck screen",
-        $state === "gameOver", `(${$state})`);
+  check("the round ending gets them off the wreck screen",
+        $state === "intermission", `(${$state})`);
 
   // ── The other players have to actually appear on screen ──
   const w7 = goOnline({
@@ -1882,7 +1957,8 @@ console.log("\n=== 9t. Service worker registration ===");
 }
 
 console.log("\n=== 10. draw() survives every state ===");
-for (const s of ["menu", "lobby", "title", "playing", "crashed", "levelComplete", "gameOver", "win"]) {
+for (const s of ["menu", "lobby", "title", "playing", "crashed", "levelComplete",
+                 "intermission", "gameOver", "win"]) {
   $state = s;
   let threw = null;
   try { draw(); } catch (e) { threw = e.message; }

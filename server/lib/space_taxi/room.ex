@@ -27,6 +27,10 @@ defmodule SpaceTaxi.Room do
   # inside each other.
   @invulnerable_ms 1_000
 
+  # How long the result screen stays up before the next level starts. Long
+  # enough to read who won, short enough that nobody goes looking for a button.
+  @intermission_ms 6_000
+
   @starting_lives 3
   @pickup_score 10
   @delivery_score 50
@@ -89,6 +93,7 @@ defmodule SpaceTaxi.Room do
 
   def collision_window_ms, do: @collision_window_ms
   def invulnerable_ms, do: @invulnerable_ms
+  def intermission_ms, do: @intermission_ms
   def target_score, do: @target_score
   def starting_lives, do: @starting_lives
 
@@ -102,6 +107,9 @@ defmodule SpaceTaxi.Room do
     {:ok,
      %{
        level: level,
+       # The channel topic to push to when the room moves on by itself. nil in
+       # tests, which read the state directly instead.
+       topic: Keyword.get(opts, :topic),
        players: %{},
        fares: %{},
        phase: :running,
@@ -346,14 +354,73 @@ defmodule SpaceTaxi.Room do
         state
 
       winner = Enum.find_value(state.players, fn {id, p} -> p.score >= @target_score && id end) ->
-        %{state | phase: :over, winner: winner}
+        end_round(state, winner)
 
       state.players != %{} and Enum.all?(state.players, fn {_, p} -> not p.alive? end) ->
-        %{state | phase: :over}
+        end_round(state, nil)
 
       true ->
         state
     end
+  end
+
+  # One player finishing ends it for everybody, and the room moves on by itself
+  # after a pause. Nobody is asked to press anything: with several players there
+  # is no one whose keypress should decide when the rest continue.
+  defp end_round(state, winner) do
+    Process.send_after(self(), :advance_level, @intermission_ms)
+    %{state | phase: :over, winner: winner}
+  end
+
+  @impl true
+  def handle_info(:advance_level, state) do
+    # Only from :over. A second player crossing the line during the pause calls
+    # check_round_end again, and that must not queue a second advance.
+    if state.phase == :over do
+      {:noreply, next_level(state)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  defp next_level(state) do
+    count = length(Levels.all())
+    level = if count > 0, do: rem(state.level + 1, count), else: state.level
+
+    state =
+      %{
+        state
+        | level: level,
+          phase: :running,
+          winner: nil,
+          # Everyone back in, including whoever was knocked out. Waiting out one
+          # round is the price of dying; being locked out for good is not.
+          players:
+            Map.new(state.players, fn {id, p} ->
+              {id, %{p | lives: @starting_lives, score: 0, alive?: true, invulnerable_until: nil}}
+            end),
+          # A new level has its own pads, so the old fares mean nothing, and
+          # nobody is parked anywhere until they say so again.
+          fares: %{},
+          occupied: %{},
+          recent_collisions: %{}
+      }
+      |> refill_fares()
+
+    broadcast_state(state)
+    state
+  end
+
+  # The room pushes on its own here, because this transition is driven by a
+  # timer rather than by anybody's message. Silent when no topic was given,
+  # which is how the tests run it.
+  defp broadcast_state(%{topic: nil}), do: :ok
+
+  defp broadcast_state(state) do
+    SpaceTaxiWeb.Endpoint.broadcast!(state.topic, "state", wire(state))
+    :ok
   end
 
   # ── Fare board ────────────────────────────────────────────
@@ -421,6 +488,35 @@ defmodule SpaceTaxi.Room do
   end
 
   # ── Wire format ───────────────────────────────────────────
+
+  @doc """
+  The snapshot as it goes over the socket: plain maps, no structs or atoms that
+  a JSON encoder would have to guess at. Public because the room pushes its own
+  state when a round rolls over on a timer, and the channel sends the same shape
+  for everything else — one format, one place.
+  """
+  def wire(state) do
+    s = if Map.has_key?(state, :cols), do: state, else: public(state)
+
+    %{
+      phase: s.phase,
+      winner: s.winner,
+      level: s.level,
+      cols: s.cols,
+      rows: s.rows,
+      world_w: s.world_w,
+      world_h: s.world_h,
+      pads: s.pads,
+      players:
+        Map.new(s.players, fn {id, p} ->
+          {id, %{name: p.name, lives: p.lives, score: p.score, alive: p.alive?}}
+        end),
+      fares:
+        Map.new(s.fares, fn {id, f} ->
+          {id, %{from: f.from, to: f.to, claimed_by: f.claimed_by}}
+        end)
+    }
+  end
 
   defp public(state) do
     level = Levels.get(state.level) || %{cols: 1, rows: 1, world_w: 800, world_h: 500}

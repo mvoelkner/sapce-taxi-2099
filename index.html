@@ -811,7 +811,11 @@ function actionHint(verb) {
 // "menu" sits in front of the old title screen and is the only state added for
 // multiplayer. Single player passes straight through it into the flow it always
 // had, so nothing behind this point had to change.
-let state = "menu";   // menu | title | playing | crashed | levelComplete | gameOver | win
+// "intermission" is the multiplayer result screen between rounds: one player
+// finishing ends it for everyone, and the room starts the next level by itself.
+let state = "menu";   // menu | title | lobby | playing | crashed | levelComplete
+                      // | intermission | gameOver | win
+let roundWinner = null;   // player id who finished the round, or null
 let gameMode = "single";                        // single | multi
 const MENU_ENTRIES = ["SINGLE PLAYER", "MULTIPLAYER"];
 let menuIndex = 0;
@@ -1208,7 +1212,19 @@ function applyRoomState(next) {
   // Only once a level is standing — the join reply arrives before it exists.
   // Not gated on "playing": the state that follows a crash is exactly the one
   // carrying the life it cost, and ignoring it there would lose the count.
-  if (pads.length && (state === "playing" || state === "crashed")) {
+  // The room starts the next level on a timer, with nobody's keypress to wait
+  // for, so the client follows it rather than asking. Checked before the rest:
+  // the fares and the world belong to the new level, not the finished one.
+  if (netActive() && state !== "lobby" && state !== "menu" &&
+      typeof next.level === "number" && next.level !== level &&
+      next.phase === "running") {
+    level = next.level;
+    startOnlineRun();
+    return;
+  }
+
+  if (pads.length && (state === "playing" || state === "crashed" ||
+                      state === "intermission")) {
     applyServerWorld();
     applyServerPlayers();
     syncFaresFromServer();
@@ -1354,10 +1370,14 @@ function applyServerPlayers() {
     score = me.score;
   }
   // A player with no lives left waits for the round to end rather than being
-  // thrown out: the room finishes when everyone is out or someone wins.
-  if (roomState.phase === "over" && state !== "gameOver") {
-    state = "gameOver";
-    sndSad();
+  // thrown out: the room finishes when everyone is out or someone wins. And a
+  // finished round is not a game over — the room puts the next level up by
+  // itself, so this is a scoreboard, not an ending.
+  if (roomState.phase === "over" && state !== "intermission") {
+    state = "intermission";
+    roundWinner = roomState.winner || null;
+    if (roundWinner === myPlayerId) sndLevelUp();
+    else sndSad();
   }
 }
 
@@ -2074,6 +2094,10 @@ function draw() {
     drawLobby();
     return;
   }
+  if (state === "intermission") {
+    drawIntermission();
+    return;
+  }
   if (state === "title") {
     drawTitle();
     return;
@@ -2640,6 +2664,57 @@ function drawLobby() {
   }
 }
 
+// The screen between rounds. One player finishing ends it for everybody, so
+// this has to say who, where that leaves the rest, and that nobody needs to do
+// anything — the room puts the next level up on its own.
+function drawIntermission() {
+  drawStars();
+
+  const players = (roomState && roomState.players) || {};
+  const ranked = Object.keys(players)
+    .map(id => ({ id, ...players[id] }))
+    .sort((a, b) => b.score - a.score);
+
+  ctx.textAlign = "center";
+
+  const iWon = roundWinner && roundWinner === myPlayerId;
+  ctx.font = "18px 'Press Start 2P'";
+  ctx.fillStyle = iWon ? C.hotYellow : (roundWinner ? C.padGreen : C.lightRed);
+  const champion = roundWinner && players[roundWinner];
+  ctx.fillText(
+    iWon ? "YOU WIN THE ROUND"
+         : (champion ? champion.name + " WINS THE ROUND" : "NOBODY MADE IT"),
+    VIEW_W/2, 110);
+
+  ctx.font = "9px 'Press Start 2P'";
+  ctx.fillStyle = C.cyan;
+  ctx.fillText("FINAL STANDINGS", VIEW_W/2, 150);
+
+  ctx.font = "10px 'Press Start 2P'";
+  let y = 185;
+  for (let i = 0; i < ranked.length && i < 8; i++) {
+    const p = ranked[i];
+    const mine = p.id === myPlayerId;
+    ctx.fillStyle = mine ? C.hotYellow : (p.alive ? C.white : C.lightGrey);
+    ctx.fillText(`${i + 1}. ${p.name}   ${p.score}` + (p.alive ? "" : "   OUT"),
+                 VIEW_W/2, y);
+    y += 22;
+  }
+
+  // The next level is the room's decision, so this is a statement rather than
+  // a prompt: there is no key to press and no one player who should decide.
+  const nextIdx = (level + 1) % LEVELS.length;
+  ctx.font = "10px 'Press Start 2P'";
+  ctx.fillStyle = C.lightGrey;
+  ctx.fillText("NEXT LEVEL: " + LEVELS[nextIdx].name, VIEW_W/2, VIEW_H - 70);
+
+  if (Math.sin(Date.now() * 0.006) > 0) {
+    ctx.font = "9px 'Press Start 2P'";
+    ctx.fillStyle = C.hotOrange;
+    ctx.fillText("STARTING SHORTLY", VIEW_W/2, VIEW_H - 48);
+  }
+}
+
 function drawTitle() {
   drawStars();
   // Big title
@@ -2857,6 +2932,7 @@ function handleLobbyInput() {
 
 function startOnlineRun() {
   level = roomState && typeof roomState.level === "number" ? roomState.level : 0;
+  roundWinner = null;
   score = 0;
   lives = 3;                 // replaced by the server's number on the next state
   totalPassengersDelivered = 0;

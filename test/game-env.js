@@ -22,6 +22,7 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   get $netState(){return netState}, get $netError(){return netError},
   get $myPlayerId(){return myPlayerId},
   get $roomState(){return roomState}, get $remotes(){return remotes},
+  get $roundWinner(){return roundWinner},
   get $menuIndex(){return menuIndex}, set $menuIndex(v){menuIndex=v},
   get $gameMode(){return gameMode}, set $gameMode(v){gameMode=v},
   get $explosionPrimed(){return explosionPrimed}, set $explosionPrimed(v){explosionPrimed=v},

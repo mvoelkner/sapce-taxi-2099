@@ -26,7 +26,13 @@ defmodule SpaceTaxi.RoomRegistry do
         {:ok, pid}
 
       [] ->
-        opts = Keyword.merge([name: via(room_name), level: 0], opts)
+        # The topic goes in so the room can push a state of its own when a round
+        # rolls over on a timer, with nobody's message to answer.
+        opts =
+          Keyword.merge(
+            [name: via(room_name), level: 0, topic: "room:" <> room_name],
+            opts
+          )
 
         case DynamicSupervisor.start_child(@supervisor, {Room, opts}) do
           {:ok, pid} -> {:ok, pid}

@@ -374,6 +374,101 @@ defmodule SpaceTaxi.RoomTest do
     end
   end
 
+  describe "finishing a round" do
+    test "one player reaching the target ends it for everyone", %{room: room} do
+      {:ok, _} = join(room, "a")
+      {:ok, _} = join(room, "b")
+      Room.award(room, "a", Room.target_score())
+
+      state = Room.snapshot(room)
+      assert state.phase == :over
+      assert state.winner == "a"
+    end
+
+    test "the round then moves on to the next level by itself", %{room: room} do
+      {:ok, first} = join(room, "a")
+      {:ok, _} = join(room, "b")
+      assert first.level == 0
+
+      Room.award(room, "a", Room.target_score())
+      assert Room.snapshot(room).phase == :over
+
+      # Nobody has to press anything: the room advances on its own
+      Process.sleep(Room.intermission_ms() + 200)
+
+      state = Room.snapshot(room)
+      assert state.phase == :running
+      assert state.level == 1
+    end
+
+    test "everyone starts the new level even the ones who were out", %{room: room} do
+      {:ok, _} = join(room, "a")
+      {:ok, _} = join(room, "b")
+      knock_out(room, "b")
+      refute Room.snapshot(room).players["b"].alive?
+
+      Room.award(room, "a", Room.target_score())
+      Process.sleep(Room.intermission_ms() + 200)
+
+      state = Room.snapshot(room)
+      # Waiting out one round is the price; being locked out for good is not
+      assert state.players["b"].alive?
+      assert state.players["b"].lives == Room.starting_lives()
+      assert state.players["a"].lives == Room.starting_lives()
+    end
+
+    test "scores start again, or the next round would end at once", %{room: room} do
+      {:ok, _} = join(room, "a")
+      Room.award(room, "a", Room.target_score())
+      Process.sleep(Room.intermission_ms() + 200)
+
+      state = Room.snapshot(room)
+      assert state.players["a"].score == 0
+      assert state.phase == :running
+    end
+
+    test "the board is rebuilt for the new level", %{room: room} do
+      {:ok, _} = join(room, "a")
+      before = Room.snapshot(room).fares |> Map.keys()
+
+      Room.award(room, "a", Room.target_score())
+      Process.sleep(Room.intermission_ms() + 200)
+
+      fares = Room.snapshot(room).fares
+      assert map_size(fares) > 0
+      refute Enum.any?(Map.keys(fares), &(&1 in before))
+    end
+
+    test "everyone out of lives ends the round the same way", %{room: room} do
+      {:ok, _} = join(room, "a")
+      knock_out(room, "a")
+      assert Room.snapshot(room).phase == :over
+      assert Room.snapshot(room).winner == nil
+
+      Process.sleep(Room.intermission_ms() + 200)
+      assert Room.snapshot(room).phase == :running
+    end
+
+    test "the last level wraps back to the first", %{room: room} do
+      {:ok, _} = start_supervised({Room, name: :wrap_room, level: 4, seed: 7}, id: :wrap)
+      {:ok, _} = Room.join(:wrap_room, "a", "A")
+      Room.award(:wrap_room, "a", Room.target_score())
+      Process.sleep(Room.intermission_ms() + 200)
+      assert Room.snapshot(:wrap_room).level == 0
+    end
+
+    test "a second win during the interval does not queue another advance", %{room: room} do
+      {:ok, _} = join(room, "a")
+      {:ok, _} = join(room, "b")
+      Room.award(room, "a", Room.target_score())
+      Room.award(room, "b", Room.target_score())
+
+      Process.sleep(Room.intermission_ms() + 200)
+      # One advance, not two: the level moved by exactly one
+      assert Room.snapshot(room).level == 1
+    end
+  end
+
   describe "leaving" do
     test "removes the player", %{room: room} do
       {:ok, _} = join(room, "a")
