@@ -22,6 +22,11 @@ defmodule SpaceTaxiWeb.Endpoint do
   #
   # You should set gzip to true if you are running phx.digest
   # when deploying your static files in production.
+  # Plug.Static does not treat index.html as a directory index, so "/" would be
+  # a 404 while "/index.html" worked. Rewriting the path is less surprising than
+  # asking every player to type the filename.
+  plug :serve_index_at_root
+
   plug Plug.Static,
     at: "/",
     from: :space_taxi,
@@ -46,4 +51,9 @@ defmodule SpaceTaxiWeb.Endpoint do
   plug Plug.Head
   plug Plug.Session, @session_options
   plug SpaceTaxiWeb.Router
+
+  defp serve_index_at_root(%Plug.Conn{path_info: []} = conn, _opts),
+    do: %{conn | path_info: ["index.html"]}
+
+  defp serve_index_at_root(conn, _opts), do: conn
 end

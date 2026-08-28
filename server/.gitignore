@@ -25,3 +25,12 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 space_taxi-*.tar
 
+
+# The game itself, copied in by scripts/serve-client.js so Phoenix can serve
+# client and server from one origin. Generated, not authored.
+/priv/static/index.html
+/priv/static/sw.js
+/priv/static/manifest.webmanifest
+/priv/static/icons/
+/priv/static/explosion3.png
+/priv/static/explosion.mp3

@@ -17,7 +17,14 @@ defmodule SpaceTaxiWeb do
   those modules here.
   """
 
-  def static_paths, do: ~w(assets fonts images favicon.ico robots.txt)
+  # The game itself is served from here too, so client and server share an
+  # origin: netUrl() then derives the WebSocket address from the page it was
+  # loaded from, and there is nothing to configure and no CORS to arrange.
+  # scripts/serve-client.js copies the build in.
+  def static_paths,
+    do: ~w(assets fonts images favicon.ico robots.txt
+           index.html manifest.webmanifest sw.js icons
+           explosion3.png explosion.mp3)
 
   def router do
     quote do

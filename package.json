@@ -10,6 +10,7 @@
     "test": "node test/harness.js",
     "test:wire": "node test/wire.mjs",
     "test:online": "node test/online.mjs",
+    "serve": "node scripts/serve-client.js",
     "sync": "npm run www && npx cap sync",
     "ios": "npm run sync && npx cap open ios",
     "android": "npm run sync && npx cap open android"

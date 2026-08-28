@@ -83,9 +83,24 @@ so a heartbeat living there stops the moment a player is wrecked or waiting.
 
 ## Connecting a client
 
-`index.html` reads two query parameters:
+The simplest arrangement, and the one the architecture spec settles on: let
+Phoenix serve the game too, so client and server share an origin and the
+WebSocket address is derived from the page rather than configured.
+
+```sh
+node scripts/serve-client.js   # copy the game into priv/static
+scripts/mix.sh phx.server
+# then open http://<host>:4000/ — nothing else to set
+```
+
+Otherwise `index.html` reads two query parameters:
 
 | Parameter | Meaning |
 |---|---|
-| `?server=` | full WebSocket URL; defaults to the page's own host, or `ws://localhost:4000/socket/websocket` under `file://` |
+| `?server=` | full WebSocket URL; overrides everything below |
 | `?room=` | room name, `[a-zA-Z0-9_-]{1,32}`; defaults to `lobby` |
+
+Without `?server=` the address is resolved in order: a `<meta name="taxi-server">`
+baked in by the native build, then the page's own origin over `http(s)`, and
+finally `ws://localhost:4000/socket/websocket` for anything else — `file://` and
+the Capacitor bundle, neither of which has an origin that is a server.
