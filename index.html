@@ -190,6 +190,117 @@
     .touch-controls__btn { transition: none; }
   }
 
+  /* ── Pilot name ───────────────────────────────────────────── */
+  /* A DOM dialogue rather than something drawn into the canvas: text entry on
+     a canvas means reimplementing a caret, selection and a mobile keyboard,
+     and none of that would be better than the one the browser already has. */
+
+  .pilot-badge {
+    position: fixed;
+    top: 6px;
+    left: 8px;
+    z-index: 200;
+    font-family: inherit;
+    font-size: 9px;
+    color: #ffff55;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid #7869c4;
+    border-radius: 3px;
+    padding: 4px 7px;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+  }
+
+  .pilot-badge:hover,
+  .pilot-badge:focus-visible { background: rgba(120, 105, 196, 0.5); }
+
+  .name-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 300;      /* over the canvas, the touch controls and everything */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.85);
+    padding: 16px;
+  }
+
+  .name-modal[hidden] { display: none; }
+
+  .name-modal__panel {
+    background: #000;
+    border: 3px solid #7869c4;
+    border-radius: 4px;
+    padding: 22px 20px;
+    max-width: 340px;
+    width: 100%;
+    text-align: center;
+  }
+
+  .name-modal__title {
+    font-size: 14px;
+    color: #ffff55;
+    margin-bottom: 12px;
+  }
+
+  .name-modal__hint {
+    font-size: 8px;
+    color: #959595;
+    line-height: 1.6;
+    margin-bottom: 14px;
+  }
+
+  .name-modal__input {
+    font-family: inherit;
+    font-size: 14px;
+    width: 100%;
+    padding: 9px 8px;
+    text-align: center;
+    letter-spacing: 2px;
+    color: #ffff55;
+    background: #000;
+    border: 2px solid #7869c4;
+    border-radius: 3px;
+    text-transform: uppercase;
+  }
+
+  .name-modal__input:focus { outline: none; border-color: #ffff55; }
+
+  .name-modal__error {
+    font-size: 8px;
+    color: #9a6759;
+    margin-top: 10px;
+    line-height: 1.6;
+  }
+
+  .name-modal__error[hidden] { display: none; }
+
+  .name-modal__actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 16px;
+  }
+
+  .name-modal__btn {
+    font-family: inherit;
+    font-size: 10px;
+    color: #000;
+    background: #ffff55;
+    border: none;
+    border-radius: 3px;
+    padding: 9px 16px;
+    cursor: pointer;
+  }
+
+  .name-modal__btn--ghost {
+    color: #959595;
+    background: transparent;
+    border: 1px solid #6c6c6c;
+  }
+
+  .name-modal__btn--ghost[hidden] { display: none; }
+
   /* ── Explosion ────────────────────────────────────────────── */
   /* A sprite strip, so it is a DOM layer over the canvas rather than a canvas
      draw. JS puts its centre on the taxi, hence the negative margin: the left
@@ -252,6 +363,24 @@
   <p class="rotate-gate__text">PLEASE ROTATE<br>YOUR DEVICE</p>
 </div>
 
+<button type="button" class="pilot-badge" id="name-badge" hidden></button>
+
+<div class="name-modal" id="name-modal" hidden>
+  <form class="name-modal__panel" id="name-form">
+    <h2 class="name-modal__title">PILOT NAME</h2>
+    <p class="name-modal__hint">A&ndash;Z AND 0&ndash;9 ONLY</p>
+    <input class="name-modal__input" id="name-input" type="text"
+           autocomplete="off" autocapitalize="characters" spellcheck="false"
+           inputmode="text" aria-label="Pilot name">
+    <p class="name-modal__error" id="name-error" hidden></p>
+    <div class="name-modal__actions">
+      <button class="name-modal__btn" type="submit">OK</button>
+      <button class="name-modal__btn name-modal__btn--ghost" type="button"
+              id="name-cancel" hidden>CANCEL</button>
+    </div>
+  </form>
+</div>
+
 <audio id="explosion-sound" src="explosion.mp3" preload="auto"></audio>
 
 <script>
@@ -265,6 +394,12 @@ const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 const explosionEl = document.getElementById("explosion");
 const explosionSound = document.getElementById("explosion-sound");
+const nameModal  = document.getElementById("name-modal");
+const nameInput  = document.getElementById("name-input");
+const nameBadge  = document.getElementById("name-badge");
+const nameForm   = document.getElementById("name-form");
+const nameCancel = document.getElementById("name-cancel");
+const nameError  = document.getElementById("name-error");
 
 // CSS pixels per world unit. Only DOM overlays need it; the canvas itself is
 // scaled by the ctx transform. layoutCanvas keeps it current.
@@ -821,7 +956,123 @@ const MENU_ENTRIES = ["SINGLE PLAYER", "MULTIPLAYER"];
 let menuIndex = 0;
 let menuNavLatched = false;   // a held stick must move the cursor once, not per frame
 let menuNotice = "";
-let playerName = "PILOT";
+
+// ── Pilot name ──────────────────────────────────────────────
+// Asked for once and kept. Empty until the player has chosen one, so nothing
+// is ever claimed on their behalf and the room never sees a placeholder.
+const NAME_MAX = 12;
+const NAME_KEY = "spacetaxi.name";
+let playerName = "";
+let nameModalOpen = false;
+
+// Upper case Latin letters and digits only. Umlauts are dropped rather than
+// folded to AE/OE/UE: the game draws in a bitmap font that has no accents, and
+// silently rewriting somebody's name is worse than asking for a plain one.
+function sanitiseName(raw) {
+  if (raw === null || raw === undefined) return "";
+  return String(raw).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, NAME_MAX);
+}
+
+// A browser can refuse storage entirely — private mode, or a blocked origin.
+// The game must still be playable, just forgetful.
+function storedName() {
+  try { return sanitiseName(localStorage.getItem(NAME_KEY)); } catch (e) { return ""; }
+}
+
+function rememberName(name) {
+  try { localStorage.setItem(NAME_KEY, name); } catch (e) {}
+}
+
+function updateNameBadge() {
+  if (!nameBadge) return;
+  // German, because that is what the player asked to see next to their name
+  nameBadge.textContent = playerName ? playerName + " bearbeiten" : "";
+  nameBadge.hidden = !playerName;
+}
+
+function openNameModal() {
+  if (!nameModal) return;
+  nameModalOpen = true;
+  nameModal.hidden = false;
+  if (nameError) { nameError.hidden = true; nameError.textContent = ""; }
+  if (nameInput) {
+    nameInput.maxLength = NAME_MAX;
+    nameInput.value = playerName;
+    try { nameInput.focus(); nameInput.select(); } catch (e) {}
+  }
+  // Only dismissable once there is a name to fall back on
+  if (nameCancel) nameCancel.hidden = !playerName;
+}
+
+function closeNameModal() {
+  nameModalOpen = false;
+  if (nameModal) nameModal.hidden = true;
+}
+
+function showNameError(msg) {
+  if (!nameError) return;
+  nameError.textContent = msg;
+  nameError.hidden = false;
+}
+
+// Returns whether the name was taken, so the caller knows to keep the dialogue
+// open rather than guessing from the state afterwards.
+function submitName(raw) {
+  const name = sanitiseName(raw);
+  if (!name) {
+    showNameError("AT LEAST ONE LETTER OR DIGIT");
+    return false;
+  }
+  const changed = name !== playerName;
+  playerName = name;
+  rememberName(name);
+  updateNameBadge();
+  closeNameModal();
+  // Mid-session the room is already showing the old name to everyone else, so
+  // it has to be told; the socket carried the name only at connect time.
+  if (changed && netActive()) netSend(netTopic(), "rename", { name });
+  return true;
+}
+
+function cancelName() {
+  if (!playerName) return false;   // nothing to fall back to
+  closeNameModal();
+  return true;
+}
+
+// Asked once, on the first visit, and never again unless the badge is used.
+function bootName() {
+  playerName = storedName();
+  updateNameBadge();
+  if (playerName) closeNameModal();
+  else openNameModal();
+}
+
+if (nameForm && nameForm.addEventListener) {
+  nameForm.addEventListener("submit", e => {
+    e.preventDefault();
+    submitName(nameInput ? nameInput.value : "");
+  });
+}
+// Corrected as it is typed, so what is on screen is what will be used — rather
+// than accepting anything and quietly changing it on submit.
+function handleNameInput() {
+  if (!nameInput) return "";
+  const clean = sanitiseName(nameInput.value);
+  if (clean !== nameInput.value) nameInput.value = clean;
+  if (nameError) nameError.hidden = true;
+  return clean;
+}
+
+if (nameInput && nameInput.addEventListener) {
+  nameInput.addEventListener("input", handleNameInput);
+}
+if (nameCancel && nameCancel.addEventListener) {
+  nameCancel.addEventListener("click", cancelName);
+}
+if (nameBadge && nameBadge.addEventListener) {
+  nameBadge.addEventListener("click", openNameModal);
+}
 let level = 0;
 let score = 0;
 let lives = 3;
@@ -3034,6 +3285,7 @@ taxi = createTaxi();
 passengers = [];
 pads = [];
 obstacles = [];
+bootName();
 bootGame();
 
 document.addEventListener("visibilitychange", applyPauseState);

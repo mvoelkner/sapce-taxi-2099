@@ -173,6 +173,42 @@ defmodule SpaceTaxi.RoomTest do
     end
   end
 
+  describe "renaming" do
+    test "changes the name everyone sees", %{room: room} do
+      {:ok, _} = Room.join(room, "a", "ALPHA")
+      :ok = Room.rename(room, "a", "BRAVO")
+      assert Room.snapshot(room).players["a"].name == "BRAVO"
+    end
+
+    test "the room cleans the name up as well", %{room: room} do
+      # The client sanitises before sending, but the room is what everyone else
+      # reads, so it does not take a client's word for the shape of it.
+      {:ok, _} = Room.join(room, "a", "alpha one!")
+      assert Room.snapshot(room).players["a"].name == "ALPHAONE"
+
+      # Nothing but letters and digits survives, and the length limit still
+      # applies — "SCRIPTXSCRIPT" is thirteen characters.
+      :ok = Room.rename(room, "a", "<script>x</script>")
+      assert Room.snapshot(room).players["a"].name == "SCRIPTXSCRIP"
+    end
+
+    test "an unusable name is refused rather than blanking theirs", %{room: room} do
+      {:ok, _} = Room.join(room, "a", "ALPHA")
+      assert {:error, :bad_name} = Room.rename(room, "a", "!!!")
+      assert Room.snapshot(room).players["a"].name == "ALPHA"
+    end
+
+    test "a name is cut to something that fits on screen", %{room: room} do
+      {:ok, _} = Room.join(room, "a", "ABCDEFGHIJKLMNOPQRST")
+      assert String.length(Room.snapshot(room).players["a"].name) <= 12
+    end
+
+    test "renaming somebody who is not here is refused", %{room: room} do
+      {:ok, _} = Room.join(room, "a", "ALPHA")
+      assert {:error, :unknown_player} = Room.rename(room, "ghost", "X")
+    end
+  end
+
   describe "the fare board" do
     test "puts out roughly half the player count", %{room: room} do
       for id <- ~w(a b c d), do: join(room, id)

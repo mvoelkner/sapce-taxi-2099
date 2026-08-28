@@ -8,6 +8,7 @@ const {
   audioLog, vibrationLog, speechLog, timerQueue, flushTimers,
   sockets,
   hapticLog, installCapacitor, removeCapacitor,
+  storage, nameBadgeEl, nameInputEl,
 } = require("./game-env.js");
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -2039,6 +2040,131 @@ console.log("\n=== 9t. Service worker registration ===");
   check("an unsupporting browser is simply skipped", threw === null, `(${threw})`);
 
   Object.assign(globalThis.location, origin);
+}
+
+console.log("\n=== 9u. The pilot's name ===");
+{
+  // ── What may be typed ──
+  check("lower case is lifted", sanitiseName("michael") === "MICHAEL",
+        `(${sanitiseName("michael")})`);
+  check("digits are kept", sanitiseName("TAXI99") === "TAXI99",
+        `(${sanitiseName("TAXI99")})`);
+  check("spaces and punctuation are dropped",
+        sanitiseName("MAX MUSTER-MANN!") === "MAXMUSTERMAN",
+        `(${sanitiseName("MAX MUSTER-MANN!")})`);
+  // Upper-casing happens first, by the language's own rules, and whatever is
+  // still outside A-Z0-9 afterwards goes. So Ü has no upper case inside the
+  // alphabet and is dropped, while ß has a defined one — STRASSE, not STRAE.
+  check("umlauts are dropped rather than guessed at",
+        sanitiseName("MÜLLERÄÖ") === "MLLER", `(${sanitiseName("MÜLLERÄÖ")})`);
+  check("but eszett takes the upper case its own language gives it",
+        sanitiseName("STRAßE") === "STRASSE", `(${sanitiseName("STRAßE")})`);
+  check("it is cut to what the room will accept",
+        sanitiseName("ABCDEFGHIJKLMNOP").length === NAME_MAX,
+        `(${sanitiseName("ABCDEFGHIJKLMNOP")})`);
+  check("nothing usable comes back empty", sanitiseName("!!! ---") === "",
+        `(${sanitiseName("!!! ---")})`);
+  check("and so does nonsense input", sanitiseName(null) === "" &&
+        sanitiseName(undefined) === "" && sanitiseName(12) === "12");
+
+  // ── First run asks, later runs do not ──
+  storage.clear();
+  bootName();
+  check("a first-time player is asked for a name", $nameModalOpen === true,
+        `(${$nameModalOpen})`);
+  check("and nothing is claimed on their behalf", $playerName === "",
+        `(${$playerName})`);
+
+  check("an empty name is not accepted", submitName("") === false && $nameModalOpen);
+  check("nor one made only of junk", submitName("###") === false && $nameModalOpen);
+
+  check("a real one is", submitName("michael") === true, `(${$playerName})`);
+  check("stored in the shape it will be used in", $playerName === "MICHAEL",
+        `(${$playerName})`);
+  check("the modal closes once there is a name", $nameModalOpen === false);
+  check("and it is remembered for next time",
+        storage.getItem("spacetaxi.name") === "MICHAEL",
+        `(${storage.getItem("spacetaxi.name")})`);
+
+  bootName();
+  check("a returning player is not asked again", $nameModalOpen === false,
+        `(${$nameModalOpen})`);
+  check("and keeps their name", $playerName === "MICHAEL", `(${$playerName})`);
+
+  // A stored name from an older build is put through the same sieve
+  storage.setItem("spacetaxi.name", "old name!");
+  bootName();
+  check("a stored name is cleaned up on the way in",
+        $playerName === "OLDNAME", `(${$playerName})`);
+
+  // ── The badge ──
+  check("the name is offered for editing",
+        nameBadgeEl.textContent === "OLDNAME bearbeiten",
+        `(${nameBadgeEl.textContent})`);
+  check("and the badge is only there once there is a name",
+        nameBadgeEl.hidden === false, `(hidden=${nameBadgeEl.hidden})`);
+
+  storage.clear();
+  bootName();
+  check("with no name there is nothing to edit yet",
+        nameBadgeEl.hidden === true, `(hidden=${nameBadgeEl.hidden})`);
+
+  submitName("ALPHA");
+  check("choosing one puts it up", nameBadgeEl.textContent === "ALPHA bearbeiten",
+        `(${nameBadgeEl.textContent})`);
+
+  // Typed characters are corrected in the field itself, so what is on screen is
+  // what will be used — not something quietly rewritten when OK is pressed.
+  const typed = raw => { nameInputEl.value = raw; handleNameInput(); return nameInputEl.value; };
+  check("lower case is lifted as it is typed", typed("bravo") === "BRAVO",
+        `(${nameInputEl.value})`);
+  check("a space never appears in the field", typed("MAX MUSTER") === "MAXMUSTER",
+        `(${nameInputEl.value})`);
+  check("nor an umlaut", typed("MÜLLER") === "MLLER", `(${nameInputEl.value})`);
+  check("and it stops at the limit",
+        typed("ABCDEFGHIJKLMNOP").length === NAME_MAX, `(${nameInputEl.value})`);
+
+  openNameModal();
+  check("the badge reopens the dialogue", $nameModalOpen === true);
+  check("with the current name ready to change",
+        nameInputEl.value === "ALPHA", `(${nameInputEl.value})`);
+  check("and this time it can be dismissed",
+        cancelName() === true && $nameModalOpen === false);
+  check("leaving the old name alone", $playerName === "ALPHA", `(${$playerName})`);
+
+  // ── It has to reach the room ──
+  netDisconnect();
+  sockets.length = 0;
+  netConnect("testroom");
+  check("the name goes out with the connection",
+        sockets[0].url.includes("name=ALPHA"), `(${sockets[0].url})`);
+
+  const wName = sockets[0];
+  wName.open();
+  const jn = wName.lastOf("phx_join");
+  wName.deliver([jn[0], jn[1], jn[2], "phx_reply", {
+    status: "ok", response: { player_id: "me", schema: 1, state: {
+      phase: "running", winner: null, starts_in: null, min_players: 2, level: 0,
+      cols: 1, rows: 1, world_w: 800, world_h: 500,
+      pads: LEVELS[0].pads.map((p, i) => ({ index: i, x: p.x, y: p.y, w: p.w, label: p.label })),
+      players: { me: { name: "ALPHA", lives: 3, score: 0, alive: true } },
+      fares: {},
+    } },
+  }]);
+
+  wName.sent.length = 0;
+  submitName("BRAVO");
+  const renamed = wName.lastOf("rename");
+  check("changing it mid-session tells the room",
+        renamed && renamed[4].name === "BRAVO",
+        `(${JSON.stringify(wName.frames().map(f => f[3]))})`);
+
+  netDisconnect();
+  sockets.length = 0;
+  storage.clear();
+  bootName();
+  submitName("PILOT");
+  $level = 0; $lives = 99; $state = "playing"; initLevel();
 }
 
 console.log("\n=== 10. draw() survives every state ===");

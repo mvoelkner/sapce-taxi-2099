@@ -63,6 +63,21 @@ defmodule SpaceTaxiWeb.RoomChannel do
 
   def handle_in("pad", _payload, socket), do: {:noreply, socket}
 
+  # Somebody editing their name mid-round. The socket carried it only at connect
+  # time, so without this everyone else keeps seeing the old one.
+  def handle_in("rename", %{"name" => name}, socket) do
+    case Room.rename(socket.assigns.room, me(socket), name) do
+      :ok ->
+        broadcast_state(socket)
+        {:reply, {:ok, %{}}, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{reason: to_string(reason)}}, socket}
+    end
+  end
+
+  def handle_in("rename", _payload, socket), do: {:noreply, socket}
+
   def handle_in("claim", %{"fare" => fare_id}, socket) do
     reply_and_broadcast(socket, Room.claim_fare(socket.assigns.room, me(socket), fare_id))
   end

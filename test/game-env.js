@@ -19,6 +19,8 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   farePolicy, handleInput, bootGame, MENU_ENTRIES,
   netConnect, netDisconnect, netTick, netHeartbeat, netFrame, updateRemotes, netSend,
   haptic, HAPTICS, vibrate, registerServiceWorker,
+  sanitiseName, bootName, submitName, cancelName, openNameModal, handleNameInput, NAME_MAX,
+  get $playerName(){return playerName}, get $nameModalOpen(){return nameModalOpen},
   get $netState(){return netState}, get $netError(){return netError},
   get $myPlayerId(){return myPlayerId},
   get $roomState(){return roomState}, get $remotes(){return remotes},
@@ -91,11 +93,44 @@ const explosionSoundStub = {
   addEventListener: noop,
 };
 
+// The name dialogue is real DOM, so it needs elements that remember what was
+// written to them rather than swallowing it.
+const nameModalEl = { classList: classListStub(), hidden: true, style: {},
+                      addEventListener: noop, focus: noop };
+const nameInputEl = { value: "", maxLength: 0, hidden: false, style: {},
+                      addEventListener: noop, focus: noop, select: noop };
+const nameBadgeEl = { textContent: "", hidden: true, classList: classListStub(),
+                      style: {}, addEventListener: noop };
+const nameFormEl  = { addEventListener: noop, classList: classListStub(), style: {} };
+const nameCancelEl = { hidden: false, addEventListener: noop, classList: classListStub(),
+                       style: {} };
+const nameErrorEl = { textContent: "", hidden: true, classList: classListStub(),
+                      style: {} };
+
+// A localStorage that behaves, including a browser that refuses to provide one
+const storage = (() => {
+  const map = new Map();
+  return {
+    getItem: k => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => map.set(k, String(v)),
+    removeItem: k => map.delete(k),
+    clear: () => map.clear(),
+    get length() { return map.size; },
+  };
+})();
+globalThis.localStorage = storage;
+
 globalThis.document = {
   getElementById: id =>
     id === "game" ? canvasStub :
     id === "explosion" ? explosionStub :
     id === "explosion-sound" ? explosionSoundStub :
+    id === "name-modal" ? nameModalEl :
+    id === "name-input" ? nameInputEl :
+    id === "name-badge" ? nameBadgeEl :
+    id === "name-form" ? nameFormEl :
+    id === "name-cancel" ? nameCancelEl :
+    id === "name-error" ? nameErrorEl :
     { ...elStub },
   querySelectorAll: () => [],
   querySelector: () => null,
@@ -259,4 +294,5 @@ module.exports = {
   audioLog, vibrationLog, speechLog, timerQueue, flushTimers, noop,
   sockets, WebSocketStub,
   hapticLog, installCapacitor, removeCapacitor,
+  storage, nameModalEl, nameInputEl, nameBadgeEl, nameFormEl, nameCancelEl, nameErrorEl,
 };

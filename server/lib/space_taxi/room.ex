@@ -38,6 +38,9 @@ defmodule SpaceTaxi.Room do
   @countdown_ms 10_000
   @countdown_step_ms 1_000
 
+  # Long enough for a name, short enough to sit in a scoreboard row
+  @name_max 12
+
   @starting_lives 3
   @pickup_score 10
   @delivery_score 50
@@ -94,6 +97,25 @@ defmodule SpaceTaxi.Room do
   def set_pad(room, player_id, pad_index),
     do: GenServer.call(room, {:set_pad, player_id, pad_index})
 
+  @doc """
+  Change the name a player is shown under, mid-session.
+
+  The socket carries the name only at connect time, so somebody editing theirs
+  while a round is running would otherwise stay under the old one for everyone
+  else. Cleaned here as well as in the client: this is what the other players
+  actually read, and it is drawn in a bitmap font with no accents.
+  """
+  def rename(room, player_id, name), do: GenServer.call(room, {:rename, player_id, name})
+
+  @doc "Upper-case letters and digits, cut to what fits on a scoreboard."
+  def clean_name(name) do
+    name
+    |> to_string()
+    |> String.upcase()
+    |> String.replace(~r/[^A-Z0-9]/, "")
+    |> String.slice(0, @name_max)
+  end
+
   def collide(room, a, b), do: GenServer.call(room, {:collide, a, b})
   def hit(room, player_id, reason), do: GenServer.call(room, {:hit, player_id, reason})
   def award(room, player_id, points), do: GenServer.call(room, {:award, player_id, points})
@@ -146,7 +168,9 @@ defmodule SpaceTaxi.Room do
 
   @impl true
   def handle_call({:join, id, name}, _from, state) do
-    player = Map.get(state.players, id) || %Player{id: id, name: name, lives: @starting_lives}
+    player =
+      Map.get(state.players, id) ||
+        %Player{id: id, name: clean_name(name), lives: @starting_lives}
 
     state =
       state
@@ -157,6 +181,23 @@ defmodule SpaceTaxi.Room do
       |> maybe_begin_countdown()
 
     {:reply, {:ok, public(state)}, state}
+  end
+
+  def handle_call({:rename, id, name}, _from, state) do
+    clean = clean_name(name)
+
+    cond do
+      not Map.has_key?(state.players, id) ->
+        {:reply, {:error, :unknown_player}, state}
+
+      clean == "" ->
+        # Refused rather than applied: blanking somebody's name over a typo is
+        # worse than ignoring the attempt.
+        {:reply, {:error, :bad_name}, state}
+
+      true ->
+        {:reply, :ok, put_in(state.players[id].name, clean)}
+    end
   end
 
   def handle_call({:leave, id}, _from, state) do
