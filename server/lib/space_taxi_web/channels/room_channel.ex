@@ -99,11 +99,18 @@ defmodule SpaceTaxiWeb.RoomChannel do
   def terminate(_reason, socket) do
     case socket.assigns do
       %{room: room} ->
-        Room.leave(room, me(socket))
-        # broadcast!, not a raw PubSub message: only this path takes the
-        # fastlane, and a hand-built Broadcast struct arrives at the other
-        # players' channels as a handle_out call that does not exist there.
-        broadcast!(socket, "state", wire(Room.snapshot(room)))
+        # :empty means that was the last player and the room has stopped, so
+        # there is neither anything to ask it nor anyone left to tell.
+        case Room.leave(room, me(socket)) do
+          :empty ->
+            :ok
+
+          :ok ->
+            # broadcast!, not a raw PubSub message: only this path takes the
+            # fastlane, and a hand-built Broadcast struct arrives at the other
+            # players' channels as a handle_out call that does not exist there.
+            broadcast!(socket, "state", wire(Room.snapshot(room)))
+        end
 
       _ ->
         :ok

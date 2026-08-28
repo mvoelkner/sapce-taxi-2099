@@ -118,8 +118,19 @@ defmodule SpaceTaxi.Room do
       state
       |> release_fares_of(id)
       |> update_in([:players], &Map.delete(&1, id))
+      # Fewer players want fewer fares. Without this the pads keep every
+      # passenger a busier room put out, and one player is left looking at a
+      # crowd nobody is coming to collect.
+      |> shed_fares()
 
-    {:reply, :ok, state}
+    if state.players == %{} do
+      # Nothing here is worth keeping once the room is empty, and keeping it
+      # means the next session inherits these fares and scores. The registry
+      # starts a fresh room on the next join.
+      {:stop, :normal, :empty, state}
+    else
+      {:reply, :ok, state}
+    end
   end
 
   def handle_call(:snapshot, _from, state), do: {:reply, public(state), state}
@@ -323,6 +334,26 @@ defmodule SpaceTaxi.Room do
     open = Enum.count(state.fares, fn {_, f} -> f.claimed_by == nil end)
     Enum.reduce(1..max(0, wanted_fares(state) - open)//1, state, fn _, acc -> add_fare(acc) end)
   end
+
+  # The counterpart to refill_fares, for when the player count falls. Only
+  # unclaimed fares go: taking one out of a taxi would strand its driver with a
+  # passenger the room no longer admits to having.
+  defp shed_fares(state) do
+    wanted = wanted_fares(state)
+    open = for {id, f} <- state.fares, f.claimed_by == nil, do: id
+
+    # Newest first, so the ones players have been flying towards survive
+    surplus =
+      open
+      |> Enum.sort_by(&fare_age/1, :desc)
+      |> Enum.take(max(0, length(open) - wanted))
+
+    update_in(state.fares, &Map.drop(&1, surplus))
+  end
+
+  # Fare ids are "f<n>" in the order they were created
+  defp fare_age("f" <> n), do: String.to_integer(n)
+  defp fare_age(_), do: 0
 
   defp add_fare(state) do
     pads = Levels.pads(state.level)

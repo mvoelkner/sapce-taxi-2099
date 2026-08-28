@@ -232,6 +232,40 @@ defmodule SpaceTaxi.RoomTest do
     end
   end
 
+  describe "the fare board shrinks too" do
+    test "a departure takes the surplus fare with it", %{room: room} do
+      for id <- ~w(a b c d), do: join(room, id)
+      assert map_size(Room.snapshot(room).fares) == 2
+
+      :ok = Room.leave(room, "d")
+      :ok = Room.leave(room, "c")
+      :ok = Room.leave(room, "b")
+
+      # One player wants one fare. Leaving two standing means two passengers on
+      # the pads with nobody to collect them.
+      assert map_size(Room.snapshot(room).fares) == 1
+    end
+
+    test "a fare someone is carrying is never taken away", %{room: room} do
+      for id <- ~w(a b c d), do: join(room, id)
+      [{fare_id, _} | _] = Enum.take(Room.snapshot(room).fares, 1)
+      {:ok, _} = Room.claim_fare(room, "a", fare_id)
+
+      :ok = Room.leave(room, "d")
+      :ok = Room.leave(room, "c")
+      :ok = Room.leave(room, "b")
+
+      # Removing it would strand player a with a passenger the room denies
+      assert Room.snapshot(room).fares[fare_id]
+      assert Room.snapshot(room).fares[fare_id].claimed_by == "a"
+    end
+
+    test "the board never drops below one", %{room: room} do
+      {:ok, _} = join(room, "a")
+      assert map_size(Room.snapshot(room).fares) == 1
+    end
+  end
+
   describe "leaving" do
     test "removes the player", %{room: room} do
       {:ok, _} = join(room, "a")
@@ -240,9 +274,27 @@ defmodule SpaceTaxi.RoomTest do
       assert Map.keys(Room.snapshot(room).players) == ["b"]
     end
 
+    test "the last one out closes the room", %{room: room} do
+      {:ok, _} = join(room, "a")
+      ref = Process.monitor(room)
+      assert :empty = Room.leave(room, "a")
+      # Otherwise the next session inherits this one's fares and scores
+      assert_receive {:DOWN, ^ref, :process, ^room, :normal}, 1_000
+    end
+
+    test "a room with players left in it stays up", %{room: room} do
+      {:ok, _} = join(room, "a")
+      {:ok, _} = join(room, "b")
+      assert :ok = Room.leave(room, "a")
+      assert Process.alive?(room)
+    end
+
     test "releases whatever fare they were carrying", %{room: room} do
       {:ok, _} = join(room, "a")
-      [{fare_id, _}] = Enum.take(Room.snapshot(room).fares, 1)
+      # A second player, or the room closes with a and there is nothing left to
+      # inspect. The passenger has to go back on the board, not out of it.
+      {:ok, _} = join(room, "b")
+      [{fare_id, _} | _] = Enum.take(Room.snapshot(room).fares, 1)
       {:ok, _} = Room.claim_fare(room, "a", fare_id)
       :ok = Room.leave(room, "a")
       assert Room.snapshot(room).fares[fare_id].claimed_by == nil

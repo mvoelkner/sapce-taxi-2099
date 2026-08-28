@@ -17,7 +17,7 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   drawEdgeMarkers, edgeMarkerFor, C,
   showExplosion, hideExplosion, sndExplosion, primeExplosionSound,
   farePolicy, handleInput, bootGame, MENU_ENTRIES,
-  netConnect, netDisconnect, netTick, netHeartbeat, updateRemotes, netSend,
+  netConnect, netDisconnect, netTick, netHeartbeat, netFrame, updateRemotes, netSend,
   haptic, HAPTICS, vibrate, registerServiceWorker,
   get $netState(){return netState}, get $netError(){return netError},
   get $myPlayerId(){return myPlayerId},

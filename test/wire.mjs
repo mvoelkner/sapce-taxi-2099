@@ -141,10 +141,16 @@ check("leaving broadcasts a new state at all",
 check("leaving removes the player",
   afterLeave && !afterLeave[4].players[idA],
   JSON.stringify(afterLeave && Object.keys(afterLeave[4].players)));
-check("and hands the fare back to the board",
-  afterLeave && afterLeave[4].fares[freeFare] &&
-    afterLeave[4].fares[freeFare].claimed_by === null,
-  JSON.stringify(afterLeave && afterLeave[4].fares[freeFare]));
+// Not "the fare comes back": with one player left the board shrinks, so the
+// released fare may go with the surplus. What must hold is that nothing is
+// still held by someone who is gone.
+check("and leaves no fare claimed by the departed player",
+  afterLeave && !Object.values(afterLeave[4].fares).some(f => f.claimed_by === idA),
+  JSON.stringify(afterLeave && afterLeave[4].fares));
+
+check("the board shrinks to what one player needs",
+  afterLeave && Object.keys(afterLeave[4].fares).length === 1,
+  JSON.stringify(afterLeave && Object.keys(afterLeave[4].fares)));
 
 b.ws.close();
 

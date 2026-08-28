@@ -1193,6 +1193,38 @@ console.log("\n=== 9q. Talking to the server ===");
   check("the position sent is the taxi's own",
         posFrames.length > 0 && posFrames[0][4].x === 111, `(${JSON.stringify(posFrames[0])})`);
 
+  // A wrecked taxi is still on everyone's screen, so its position has to keep
+  // going out. Without that, anyone joining later never learns where it is:
+  // they see the player in the standings and no taxi anywhere.
+  // Driven the way the game drives it: update() for the simulation step and
+  // netFrame() once per frame. Calling netTick() directly would prove nothing,
+  // because the whole defect is that update() never reaches it.
+  for (const stuck of ["crashed", "levelComplete"]) {
+    $state = stuck;
+    w.sent.length = 0;
+    for (let i = 0; i < 120; i++) { update(); netFrame(); }
+    check(`a taxi still reports its position while "${stuck}"`,
+          w.frames().some(f => f[3] === "pos"),
+          `(${JSON.stringify(w.frames().map(f => f[3]))})`);
+  }
+
+  // A parked wreck does not need 15 Hz — it only has to be locatable
+  $state = "crashed";
+  w.sent.length = 0;
+  for (let i = 0; i < 120; i++) { update(); netFrame(); }
+  const idlePos = w.frames().filter(f => f[3] === "pos").length;
+  check("but far more slowly than a moving one",
+        idlePos > 0 && idlePos <= 8, `(${idlePos} in 120 frames)`);
+
+  // Out of the round is different: there is nothing left to draw
+  $state = "gameOver";
+  w.sent.length = 0;
+  for (let i = 0; i < 120; i++) { update(); netFrame(); }
+  check("but not once the round is over",
+        !w.frames().some(f => f[3] === "pos"),
+        `(${JSON.stringify(w.frames().map(f => f[3]))})`);
+  $state = "playing";
+
   // ── Heartbeat, or an idle socket gets cut by the ingress ──
   w.sent.length = 0;
   for (let i = 0; i < 60 * 31; i++) netHeartbeat();

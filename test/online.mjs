@@ -33,6 +33,7 @@ function spawnClient(label) {
 
   const exported = [
     "handleInput", "bootGame", "update", "draw", "initLevel", "netDisconnect",
+    "netFrame",
     "LEVELS", "GEAR_LEN", "PERSON_HALF_W", "input",
     "get $state(){return state}", "set $state(v){state=v}",
     "get $netState(){return netState}", "get $netError(){return netError}",
@@ -106,12 +107,15 @@ function spawnClient(label) {
   return sandbox;
 }
 
-// Drive a client's simulation forward the way its own game loop would
+// Drive a client the way its own game loop does: a simulation step, then the
+// per-frame network work. netFrame() has to be in here — it is what keeps a
+// wrecked taxi reporting its position, and update() returns immediately then.
 function step(c, n = 1) {
   for (let i = 0; i < n; i++) {
     c.input.up = c.input.left = c.input.right = false;
     c.handleInput();
     c.update();
+    c.netFrame();
   }
 }
 
@@ -230,15 +234,55 @@ check("a replacement fare arrived", Object.keys(winner.$roomState.fares).length 
       JSON.stringify(Object.keys(winner.$roomState.fares)));
 
 // ── A crash costs a life, and the server is the one counting ──
+check("the loser is still flying before we wreck it",
+      loser.$state === "playing", `(${loser.$state}, ${loser.$lives} lives)`);
+
 const livesBefore = loser.$lives;
 loser.$taxi.landed = false;
 loser.$taxi.y = 40;
 loser.$taxi.vy = 9;                  // straight into the ground
 await pump([A, B], 300);
 check("a crash costs exactly one life", loser.$lives === livesBefore - 1,
-      `(${livesBefore} -> ${loser.$lives})`);
+      `(${livesBefore} -> ${loser.$lives}, state ${loser.$state})`);
 check("and the other client is told", winner.$roomState.players[loser.$myPlayerId].lives === livesBefore - 1,
       `(${winner.$roomState.players[loser.$myPlayerId].lives})`);
+
+// ── A wrecked player must still be findable by someone joining afterwards ──
+// This is the "four players listed, three taxis on screen" report: a wrecked
+// taxi stops simulating, so it used to stop reporting where it was, and anyone
+// arriving later never heard a position for it at all.
+const C = spawnClient("C");
+C.$playerName = "CHARLIE";
+C.bootGame();
+C.$menuIndex = 1;
+C.input.action = true;
+C.handleInput();
+await wait(1500);
+
+check("a third client joins", C.$netState === "joined", `(${C.$netState} ${C.$netError})`);
+check("and is told about all three players",
+      Object.keys(C.$roomState.players).length === 3,
+      JSON.stringify(Object.values(C.$roomState.players).map(p => p.name)));
+
+await pump([A, B, C], 200);
+
+const wreckId = loser.$myPlayerId;
+const wreckSeen = C.$remotes.get(wreckId);
+check("the wrecked taxi is still on the newcomer's map",
+      wreckSeen && wreckSeen.seen, JSON.stringify([...C.$remotes.entries()].map(([id, r]) => [id, r.seen])));
+check("and in the place its owner left it",
+      wreckSeen && Math.abs(wreckSeen.tx - loser.$taxi.x) < 2,
+      `(${wreckSeen && wreckSeen.tx} vs ${loser.$taxi.x})`);
+
+// Everyone listed has a taxi to go with them: that is the whole complaint
+const listed = Object.keys(C.$roomState.players).filter(id => id !== C.$myPlayerId);
+const located = listed.filter(id => { const r = C.$remotes.get(id); return r && r.seen; });
+check("every other player listed has a taxi on screen",
+      listed.length === located.length,
+      `(${listed.length} listed, ${located.length} located)`);
+
+C.netDisconnect();
+await wait(400);
 
 // ── Leaving ──
 A.netDisconnect();

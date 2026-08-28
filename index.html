@@ -1260,16 +1260,20 @@ function netTick() {
 
   if (++netPosTick >= NET_POS_EVERY) {
     netPosTick = 0;
-    netSend(netTopic(), "pos", {
-      x: Math.round(taxi.x * 10) / 10,
-      y: Math.round(taxi.y * 10) / 10,
-      vx: Math.round(taxi.vx * 100) / 100,
-      vy: Math.round(taxi.vy * 100) / 100,
-      a: Math.round(taxi.angle * 100) / 100,
-      g: Math.round(taxi.gear * 100) / 100,
-      t: taxi.thrustUp ? 1 : 0,
-    });
+    sendPosition();
   }
+}
+
+function sendPosition() {
+  netSend(netTopic(), "pos", {
+    x: Math.round(taxi.x * 10) / 10,
+    y: Math.round(taxi.y * 10) / 10,
+    vx: Math.round(taxi.vx * 100) / 100,
+    vy: Math.round(taxi.vy * 100) / 100,
+    a: Math.round(taxi.angle * 100) / 100,
+    g: Math.round(taxi.gear * 100) / 100,
+    t: taxi.thrustUp ? 1 : 0,
+  });
 }
 
 // The heartbeat, from the frame loop rather than the simulation step. update()
@@ -1283,6 +1287,32 @@ function netHeartbeat() {
     netBeatTick = 0;
     netSend("phoenix", "heartbeat", {}, null);
   }
+}
+
+// A wrecked taxi is still on everyone's screen, but update() has stopped, so it
+// stops reporting where it is. Anyone joining after that never hears a position
+// for it: they see the player in the standings and no taxi anywhere on the map.
+// It is not moving, so a couple of times a second is plenty — it only has to be
+// locatable, not smooth.
+const NET_IDLE_POS_EVERY = 30;
+let netIdleTick = 0;
+
+function netIdlePosition() {
+  if (!netActive() || !taxi) return;
+  // "playing" already reports at 15 Hz from the simulation step; once the round
+  // is over there is nothing left to draw.
+  if (state !== "crashed" && state !== "levelComplete") { netIdleTick = 0; return; }
+  if (++netIdleTick < NET_IDLE_POS_EVERY) return;
+  netIdleTick = 0;
+  sendPosition();
+}
+
+// Everything the network needs once per frame. Outside the simulation step on
+// purpose: both of these have to keep running in the states where update() does
+// not, which is exactly when they matter.
+function netFrame() {
+  netHeartbeat();
+  netIdlePosition();
 }
 
 // ── Server-owned game state ─────────────────────────────────
@@ -2689,7 +2719,7 @@ function gameLoop(now) {
 
   // Outside the simulation step on purpose: both have to keep running in the
   // states where update() does not.
-  netHeartbeat();
+  netFrame();
   updateRemotes();
   updateCamera();
   draw();
