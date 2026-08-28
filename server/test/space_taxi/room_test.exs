@@ -3,8 +3,13 @@ defmodule SpaceTaxi.RoomTest do
 
   alias SpaceTaxi.Room
 
+  # Most of these are about what happens inside a running round, so this room
+  # skips the wait for a field: one player is enough and it starts at once. The
+  # "a fair start" block below uses the real thresholds.
   setup do
-    {:ok, room} = start_supervised({Room, name: nil, level: 0, seed: 4242})
+    {:ok, room} =
+      start_supervised({Room, name: nil, level: 0, seed: 4242, min_players: 1, countdown_ms: 0})
+
     %{room: room}
   end
 
@@ -16,6 +21,106 @@ defmodule SpaceTaxi.RoomTest do
     for _ <- 1..Room.starting_lives() do
       Room.hit(room, id, :crash)
       Process.sleep(Room.invulnerable_ms() + 5)
+    end
+  end
+
+  describe "a fair start" do
+    # A short countdown, or every one of these would take ten seconds
+    setup do
+      {:ok, quick} =
+        start_supervised(
+          {Room, name: nil, level: 0, seed: 99, min_players: 2, countdown_ms: 1_000},
+          id: :quick
+        )
+
+      %{quick: quick}
+    end
+
+    test "one player alone does not start a round", %{quick: room} do
+      {:ok, state} = Room.join(room, "a", "A")
+      assert state.phase == :waiting
+      assert state.starts_in == nil
+      # No fares either: nobody should be collecting while others are still
+      # arriving, which is the whole point of waiting.
+      assert state.fares == %{}
+    end
+
+    test "a second player starts the countdown rather than the round", %{quick: room} do
+      {:ok, _} = Room.join(room, "a", "A")
+      {:ok, state} = Room.join(room, "b", "B")
+      assert state.phase == :starting
+      assert state.starts_in > 0
+    end
+
+    test "the round begins once the countdown runs out", %{quick: room} do
+      {:ok, _} = Room.join(room, "a", "A")
+      {:ok, _} = Room.join(room, "b", "B")
+      Process.sleep(1_500)
+
+      state = Room.snapshot(room)
+      assert state.phase == :running
+      assert state.starts_in == nil
+      assert map_size(state.fares) > 0
+    end
+
+    test "everyone begins level and lives together", %{quick: room} do
+      {:ok, _} = Room.join(room, "a", "A")
+      {:ok, _} = Room.join(room, "b", "B")
+      Process.sleep(1_500)
+
+      state = Room.snapshot(room)
+
+      for {_id, p} <- state.players do
+        assert p.score == 0
+        assert p.lives == Room.starting_lives()
+        assert p.alive?
+      end
+    end
+
+    test "dropping back below the minimum stops the countdown", %{quick: room} do
+      {:ok, _} = Room.join(room, "a", "A")
+      {:ok, _} = Room.join(room, "b", "B")
+      assert Room.snapshot(room).phase == :starting
+
+      :ok = Room.leave(room, "b")
+      state = Room.snapshot(room)
+      assert state.phase == :waiting
+      assert state.starts_in == nil
+
+      # And it does not sneak into running when the old timer fires
+      Process.sleep(1_500)
+      assert Room.snapshot(room).phase == :waiting
+    end
+
+    test "a third player does not restart the countdown", %{quick: room} do
+      {:ok, _} = Room.join(room, "a", "A")
+      {:ok, second} = Room.join(room, "b", "B")
+      Process.sleep(200)
+      {:ok, third} = Room.join(room, "c", "C")
+      assert third.phase == :starting
+      assert third.starts_in <= second.starts_in
+    end
+
+    test "someone arriving mid-round joins the round in progress", %{quick: room} do
+      {:ok, _} = Room.join(room, "a", "A")
+      {:ok, _} = Room.join(room, "b", "B")
+      Process.sleep(1_500)
+      assert Room.snapshot(room).phase == :running
+
+      {:ok, late} = Room.join(room, "c", "C")
+      assert late.phase == :running
+    end
+
+    test "nothing can be claimed before the round starts", %{quick: room} do
+      {:ok, _} = Room.join(room, "a", "A")
+      {:ok, _} = Room.join(room, "b", "B")
+      assert Room.snapshot(room).phase == :starting
+      assert {:error, :unknown_fare} = Room.claim_fare(room, "a", "f0")
+    end
+
+    test "the room reports how many players it is waiting for", %{quick: room} do
+      {:ok, state} = Room.join(room, "a", "A")
+      assert state.min_players == 2
     end
   end
 

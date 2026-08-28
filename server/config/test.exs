@@ -12,3 +12,7 @@ config :logger, level: :warning
 
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
+
+# No waiting room in the suite: a round starts on the first join and starts at
+# once. The tests that are actually about the wait ask for the real values.
+config :space_taxi, :room, min_players: 1, countdown_ms: 0

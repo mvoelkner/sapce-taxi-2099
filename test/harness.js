@@ -1342,6 +1342,91 @@ console.log("\n=== 9r. Playing online ===");
   check("and a press gets back to the menu", $state === "menu", `(${$state})`);
   check("leaving the lobby drops the socket", $netState === "idle", `(${$netState})`);
 
+  // ── Joining alone waits instead of starting ──
+  // A round is a race, so the first to arrive must not have the pads to
+  // themselves while everyone else is still connecting.
+  netDisconnect();
+  sockets.length = 0;
+  bootGame();
+  $menuIndex = 1;
+  input.action = true;
+  handleInput();
+  const wWait = sockets[sockets.length - 1];
+  wWait.open();
+  const jw = wWait.lastOf("phx_join");
+  wWait.deliver([jw[0], jw[1], jw[2], "phx_reply", {
+    status: "ok",
+    response: { player_id: "me", schema: 1, state: snapshot({
+      phase: "waiting", starts_in: null, min_players: 2, fares: {},
+      players: { me: { name: "ME", lives: 3, score: 0, alive: true } },
+    }) },
+  }]);
+  check("a lone player does not drop into a game", $state === "lobby", `(${$state})`);
+
+  const waitText = [];
+  ctxStub.fillText = t => waitText.push(String(t));
+  waitText.length = 0;
+  draw();
+  check("and is told what is being waited for",
+        waitText.some(t => /WAITING|1\s*\/\s*2/i.test(t)), `(${JSON.stringify(waitText)})`);
+
+  // A second player starts a countdown, not the round
+  wWait.deliver([null, null, "room:testroom", "state", snapshot({
+    phase: "starting", starts_in: 7, min_players: 2, fares: {},
+    players: {
+      me:    { name: "ME",   lives: 3, score: 0, alive: true },
+      other: { name: "THEM", lives: 3, score: 0, alive: true },
+    },
+  })]);
+  check("a full field still does not start it at once",
+        $state === "lobby", `(${$state})`);
+  waitText.length = 0;
+  draw();
+  check("the countdown is shown",
+        waitText.some(t => /\b7\b/.test(t)), `(${JSON.stringify(waitText)})`);
+
+  // Only when the room says running
+  wWait.deliver([null, null, "room:testroom", "state", snapshot({
+    phase: "running", starts_in: null, min_players: 2,
+    players: {
+      me:    { name: "ME",   lives: 3, score: 0, alive: true },
+      other: { name: "THEM", lives: 3, score: 0, alive: true },
+    },
+  })]);
+  check("the room starting the round starts the game here",
+        $state === "playing", `(${$state})`);
+  check("everyone begins on the same level", $level === 0, `(${$level})`);
+
+  // And if the field thins out again before the start
+  netDisconnect();
+  sockets.length = 0;
+  bootGame();
+  $menuIndex = 1; input.action = true; handleInput();
+  const wDrop = sockets[sockets.length - 1];
+  wDrop.open();
+  const jd = wDrop.lastOf("phx_join");
+  wDrop.deliver([jd[0], jd[1], jd[2], "phx_reply", {
+    status: "ok",
+    response: { player_id: "me", schema: 1, state: snapshot({
+      phase: "starting", starts_in: 4, min_players: 2, fares: {},
+      players: {
+        me:    { name: "ME",   lives: 3, score: 0, alive: true },
+        other: { name: "THEM", lives: 3, score: 0, alive: true },
+      },
+    }) },
+  }]);
+  wDrop.deliver([null, null, "room:testroom", "state", snapshot({
+    phase: "waiting", starts_in: null, min_players: 2, fares: {},
+    players: { me: { name: "ME", lives: 3, score: 0, alive: true } },
+  })]);
+  check("a cancelled countdown goes back to waiting rather than starting",
+        $state === "lobby", `(${$state})`);
+  waitText.length = 0;
+  draw();
+  check("and says so", waitText.some(t => /WAITING|1\s*\/\s*2/i.test(t)),
+        `(${JSON.stringify(waitText)})`);
+  delete ctxStub.fillText;
+
   // ── A good join starts the game ──
   const ws = goOnline();
   check("a successful join starts playing", $state === "playing", `(${$state})`);

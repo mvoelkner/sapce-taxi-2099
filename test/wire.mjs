@@ -73,8 +73,27 @@ check("and does not come back to the sender",
   !a.inbox.some((m) => m[3] === "pos"),
   JSON.stringify(a.inbox.map(m => m[3])));
 
+// ── Wait out the fair-start countdown ──
+// A room holds off until it has a field and then counts down, so there are no
+// fares to claim until it says the round is running.
+const latestState = (client) => {
+  const s = client.inbox.filter(m => m[3] === "state").pop();
+  return s ? s[4] : null;
+};
+
+let running = null;
+const deadline = Date.now() + 20000;
+while (Date.now() < deadline) {
+  const s = latestState(a);
+  if (s && s.phase === "running" && Object.keys(s.fares).length) { running = s; break; }
+  await wait(400);
+}
+check("the round starts once the countdown runs out", !!running,
+  JSON.stringify(latestState(a) && { phase: latestState(a).phase,
+                                     starts_in: latestState(a).starts_in }));
+
 // ── Claiming a fare, first come first served ──
-const fareId = Object.keys(joinA[4].response.state.fares)[0];
+const fareId = Object.keys(running.fares)[0];
 a.inbox.length = 0; b.inbox.length = 0;
 const refA = a.send(TOPIC, "claim", { fare: fareId });
 await wait(300);

@@ -31,6 +31,13 @@ defmodule SpaceTaxi.Room do
   # enough to read who won, short enough that nobody goes looking for a button.
   @intermission_ms 6_000
 
+  # A round is a race, so it may not start before the racers are there. Whoever
+  # arrives first would otherwise have the pads to themselves and be several
+  # fares up before anyone else drew a breath.
+  @min_players 2
+  @countdown_ms 10_000
+  @countdown_step_ms 1_000
+
   @starting_lives 3
   @pickup_score 10
   @delivery_score 50
@@ -94,6 +101,15 @@ defmodule SpaceTaxi.Room do
   def collision_window_ms, do: @collision_window_ms
   def invulnerable_ms, do: @invulnerable_ms
   def intermission_ms, do: @intermission_ms
+  def min_players, do: configured(:min_players, @min_players)
+  def countdown_ms, do: configured(:countdown_ms, @countdown_ms)
+
+  # Both can be tuned per environment: the test suite relaxes them so it does
+  # not spend ten seconds on every round, and an operator may want a different
+  # minimum for a small group.
+  defp configured(key, fallback),
+    do: Application.get_env(:space_taxi, :room, [])[key] || fallback
+
   def target_score, do: @target_score
   def starting_lives, do: @starting_lives
 
@@ -110,9 +126,15 @@ defmodule SpaceTaxi.Room do
        # The channel topic to push to when the room moves on by itself. nil in
        # tests, which read the state directly instead.
        topic: Keyword.get(opts, :topic),
+       # Both relaxed in tests: a suite that waits ten seconds per round, twice
+       # over, is a suite nobody runs. countdown_ms: 0 starts at once.
+       countdown_ms: Keyword.get(opts, :countdown_ms, configured(:countdown_ms, @countdown_ms)),
+       min_players: Keyword.get(opts, :min_players, configured(:min_players, @min_players)),
        players: %{},
        fares: %{},
-       phase: :running,
+       # waiting -> starting -> running -> over -> (next level) running
+       phase: :waiting,
+       starts_in: nil,
        winner: nil,
        recent_collisions: %{},
        # player id -> pad index they are parked on
@@ -129,7 +151,10 @@ defmodule SpaceTaxi.Room do
     state =
       state
       |> put_in([:players, id], player)
-      |> refill_fares()
+      # No fares before the round starts: nobody should be collecting while the
+      # others are still arriving, which is the whole point of waiting.
+      |> then(fn s -> if s.phase == :running, do: refill_fares(s), else: s end)
+      |> maybe_begin_countdown()
 
     {:reply, {:ok, public(state)}, state}
   end
@@ -145,6 +170,7 @@ defmodule SpaceTaxi.Room do
       # passenger a busier room put out, and one player is left looking at a
       # crowd nobody is coming to collect.
       |> shed_fares()
+      |> maybe_cancel_countdown()
 
     if state.players == %{} do
       # Nothing here is worth keeping once the room is empty, and keeping it
@@ -372,7 +398,53 @@ defmodule SpaceTaxi.Room do
     %{state | phase: :over, winner: winner}
   end
 
+  # ── Waiting for a fair field ──────────────────────────────
+
+  defp maybe_begin_countdown(%{phase: :waiting} = state) do
+    cond do
+      map_size(state.players) < state.min_players ->
+        state
+
+      state.countdown_ms <= 0 ->
+        begin_round(state)
+
+      true ->
+        Process.send_after(self(), :countdown_tick, @countdown_step_ms)
+        %{state | phase: :starting, starts_in: div(state.countdown_ms, 1000)}
+    end
+  end
+
+  defp maybe_begin_countdown(state), do: state
+
+  # A player leaving can take the field back below the minimum
+  defp maybe_cancel_countdown(%{phase: :starting} = state) do
+    if map_size(state.players) < state.min_players do
+      %{state | phase: :waiting, starts_in: nil}
+    else
+      state
+    end
+  end
+
+  defp maybe_cancel_countdown(state), do: state
+
   @impl true
+  def handle_info(:countdown_tick, %{phase: :starting} = state) do
+    left = (state.starts_in || 1) - 1
+
+    if left <= 0 do
+      {:noreply, begin_round(state)}
+    else
+      Process.send_after(self(), :countdown_tick, @countdown_step_ms)
+      state = %{state | starts_in: left}
+      broadcast_state(state)
+      {:noreply, state}
+    end
+  end
+
+  # A stale tick from a countdown that was called off. Dropping it is what stops
+  # a cancelled start from sneaking into a running round.
+  def handle_info(:countdown_tick, state), do: {:noreply, state}
+
   def handle_info(:advance_level, state) do
     # Only from :over. A second player crossing the line during the pause calls
     # check_round_end again, and that must not queue a second advance.
@@ -389,12 +461,20 @@ defmodule SpaceTaxi.Room do
     count = length(Levels.all())
     level = if count > 0, do: rem(state.level + 1, count), else: state.level
 
+    # No countdown between levels: everyone has just spent the intermission
+    # looking at the same screen, so they all start from the same place anyway.
+    # If the field has thinned out below the minimum, back to waiting instead.
+    %{state | level: level} |> begin_round()
+  end
+
+  # Everything a round needs to start from nothing. Shared by the opening
+  # countdown and the roll into the next level, so the two cannot drift apart.
+  defp begin_round(state) do
     state =
       %{
         state
-        | level: level,
-          phase: :running,
-          winner: nil,
+        | winner: nil,
+          starts_in: nil,
           # Everyone back in, including whoever was knocked out. Waiting out one
           # round is the price of dying; being locked out for good is not.
           players:
@@ -407,7 +487,13 @@ defmodule SpaceTaxi.Room do
           occupied: %{},
           recent_collisions: %{}
       }
-      |> refill_fares()
+
+    state =
+      if map_size(state.players) >= state.min_players do
+        %{state | phase: :running} |> refill_fares()
+      else
+        %{state | phase: :waiting}
+      end
 
     broadcast_state(state)
     state
@@ -501,6 +587,8 @@ defmodule SpaceTaxi.Room do
     %{
       phase: s.phase,
       winner: s.winner,
+      starts_in: s.starts_in,
+      min_players: s.min_players,
       level: s.level,
       cols: s.cols,
       rows: s.rows,
@@ -527,6 +615,8 @@ defmodule SpaceTaxi.Room do
       level: state.level,
       phase: state.phase,
       winner: state.winner,
+      starts_in: state.starts_in,
+      min_players: state.min_players,
       cols: cols,
       rows: rows,
       world_w: cols * elem(Levels.sector(), 0),

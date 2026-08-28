@@ -159,8 +159,21 @@ check("both clients leave the menu for the lobby",
 await wait(1500);
 check("A reaches the server", A.$netState === "joined", `(${A.$netState} ${A.$netError})`);
 check("B reaches the server", B.$netState === "joined", `(${B.$netState} ${B.$netError})`);
+
+// Neither is playing yet: the room waits for a field and then counts down, so
+// that whoever connected first is not already several fares up.
+check("nobody is flying during the countdown",
+      A.$state === "lobby" && B.$state === "lobby", `(${A.$state}/${B.$state})`);
+check("and the room says why",
+      ["waiting", "starting"].includes(A.$roomState.phase), `(${A.$roomState.phase})`);
+
+const startBy = Date.now() + 20000;
+while (Date.now() < startBy && A.$state !== "playing") await pump([A, B], 60);
+
 check("both are playing", A.$state === "playing" && B.$state === "playing",
       `(${A.$state}/${B.$state})`);
+check("and started together, neither ahead of the other",
+      A.$score === 0 && B.$score === 0, `(${A.$score}/${B.$score})`);
 check("they got different ids", A.$myPlayerId !== B.$myPlayerId,
       `(${A.$myPlayerId} / ${B.$myPlayerId})`);
 check("each sees the other in the room",

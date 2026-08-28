@@ -1178,9 +1178,12 @@ function netReceive([joinRef, ref, topic, event, payload]) {
         netState = "joined";
         myPlayerId = payload.response.player_id;
         applyRoomState(payload.response.state);
-        // Start straight away rather than waiting for a keypress: the player
-        // already chose multiplayer, and the lobby is a wait, not a menu.
-        if (state === "lobby") startOnlineRun();
+        // Only if a round is actually under way. A room short of players, or
+        // one counting down, leaves this in the lobby until it says otherwise —
+        // the first to arrive must not have the pads to themselves.
+        if (state === "lobby" && roomState && roomState.phase === "running") {
+          startOnlineRun();
+        }
       } else {
         netState = "failed";
         netError = ((payload && payload.response && payload.response.reason) ||
@@ -1212,15 +1215,16 @@ function applyRoomState(next) {
   // Only once a level is standing — the join reply arrives before it exists.
   // Not gated on "playing": the state that follows a crash is exactly the one
   // carrying the life it cost, and ignoring it there would lose the count.
-  // The room starts the next level on a timer, with nobody's keypress to wait
-  // for, so the client follows it rather than asking. Checked before the rest:
-  // the fares and the world belong to the new level, not the finished one.
-  if (netActive() && state !== "lobby" && state !== "menu" &&
-      typeof next.level === "number" && next.level !== level &&
-      next.phase === "running") {
-    level = next.level;
-    startOnlineRun();
-    return;
+  // The room decides when play begins and when it moves on, both on timers with
+  // nobody's keypress to wait for, so the client follows rather than asking.
+  // Checked before the rest: the fares and the world belong to the new round.
+  if (netActive() && state !== "menu" && next.phase === "running") {
+    const levelChanged = typeof next.level === "number" && next.level !== level;
+    if (state === "lobby" || levelChanged) {
+      if (levelChanged) level = next.level;
+      startOnlineRun();
+      return;
+    }
   }
 
   if (pads.length && (state === "playing" || state === "crashed" ||
@@ -2643,12 +2647,41 @@ function drawLobby() {
   ctx.fillText("ROOM " + netRoom.toUpperCase(), VIEW_W/2, 210);
 
   const failed = netState === "failed" || netState === "closed";
-  ctx.font = "12px 'Press Start 2P'";
-  ctx.fillStyle = failed ? C.lightRed : C.white;
   const dots = ".".repeat(1 + Math.floor(Date.now() / 400) % 3);
-  ctx.fillText(failed ? (netError || "NO CONNECTION")
-                      : (netState === "joining" ? "JOINING" : "CONNECTING") + dots,
-               VIEW_W/2, 280);
+  const phase = roomState && roomState.phase;
+  const here = roomState ? Object.keys(roomState.players).length : 0;
+  const need = (roomState && roomState.min_players) || 2;
+
+  if (failed) {
+    ctx.font = "12px 'Press Start 2P'";
+    ctx.fillStyle = C.lightRed;
+    ctx.fillText(netError || "NO CONNECTION", VIEW_W/2, 280);
+  } else if (phase === "starting") {
+    // A countdown so everyone lifts off at the same moment. Without it whoever
+    // connected first would be several fares up before the rest had a taxi.
+    ctx.font = "12px 'Press Start 2P'";
+    ctx.fillStyle = C.white;
+    ctx.fillText("GET READY", VIEW_W/2, 262);
+    ctx.font = "36px 'Press Start 2P'";
+    ctx.fillStyle = C.hotYellow;
+    ctx.fillText(String(roomState.starts_in == null ? "" : roomState.starts_in),
+                 VIEW_W/2, 312);
+  } else if (phase === "waiting") {
+    ctx.font = "12px 'Press Start 2P'";
+    ctx.fillStyle = C.white;
+    ctx.fillText("WAITING FOR PLAYERS" + dots, VIEW_W/2, 275);
+    ctx.font = "16px 'Press Start 2P'";
+    ctx.fillStyle = C.hotYellow;
+    ctx.fillText(here + " / " + need, VIEW_W/2, 310);
+    ctx.font = "9px 'Press Start 2P'";
+    ctx.fillStyle = C.lightGrey;
+    ctx.fillText("SHARE THIS ADDRESS TO FILL THE ROOM", VIEW_W/2, 338);
+  } else {
+    ctx.font = "12px 'Press Start 2P'";
+    ctx.fillStyle = C.white;
+    ctx.fillText((netState === "joining" ? "JOINING" : "CONNECTING") + dots,
+                 VIEW_W/2, 280);
+  }
 
   if (failed) {
     ctx.font = "9px 'Press Start 2P'";
