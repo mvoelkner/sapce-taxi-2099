@@ -1497,6 +1497,65 @@ console.log("\n=== 9r. Playing online ===");
   check("a state that changes nothing about the world leaves it alone",
         $starField.length === starsNow && $starField[0] === firstStar);
 
+  // ── Telling the room which pad is taken ──
+  const wPad = goOnline();
+  wPad.sent.length = 0;
+  parkOn(0, clearSpotOn(0));
+  update();
+  const padMsg = wPad.lastOf("pad");
+  check("landing reports the pad to the room", !!padMsg,
+        `(${JSON.stringify(wPad.frames().map(f => f[3]))})`);
+  check("with the pad it is standing on",
+        padMsg && padMsg[4].pad === 0, `(${JSON.stringify(padMsg && padMsg[4])})`);
+
+  wPad.sent.length = 0;
+  for (let i = 0; i < 10; i++) update();
+  check("and does not repeat it every frame", !wPad.lastOf("pad"),
+        `(${wPad.frames().filter(f => f[3] === "pad").length} repeats)`);
+
+  wPad.sent.length = 0;
+  $taxi.landed = false; $taxi.landedPad = -1; $taxi.y -= 60;
+  update();
+  const offMsg = wPad.lastOf("pad");
+  check("taking off frees it again", offMsg && offMsg[4].pad === -1,
+        `(${JSON.stringify(offMsg && offMsg[4])})`);
+
+  // ── A fare that appears under a parked taxi must not kill it ──
+  // The room keeps fares off occupied pads, but a taxi can land in the same
+  // instant one is minted. That race must not cost a life.
+  const wRace = goOnline({ fares: {} });
+  parkOn(0, $pads[0].x + $pads[0].w/2 - $taxi.w/2);
+  update();
+  const livesBefore = $lives;
+  const stateBefore = $state;
+
+  // A fare on this pad, positioned right where the taxi is standing
+  wRace.deliver([null, null, "room:testroom", "state", snapshot({
+    fares: { fz: { from: 0, to: 1, claimed_by: null } },
+  })]);
+  const spawned = $passengers.find(p => p.fareId === "fz");
+  check("the fare is placed", !!spawned, `(${JSON.stringify($passengers.map(p => p.fareId))})`);
+  if (spawned) spawned.x = $taxi.x + $taxi.w/2;     // squarely underneath
+
+  for (let i = 0; i < 30; i++) update();
+  check("a fare appearing under a parked taxi does not wreck it",
+        $lives === livesBefore && $state === stateBefore,
+        `(${livesBefore} -> ${$lives}, ${stateBefore} -> ${$state})`);
+  check("they get in instead",
+        $taxi.hasPassenger || ($passengers[0] && $passengers[0].phase !== "waiting"),
+        `(${$passengers.map(p => p.phase)})`);
+
+  // Landing on someone must still be fatal — that rule is untouched
+  const wCrush = goOnline();
+  const victim = $passengers[0];
+  $taxi.landed = false; $taxi.landedPad = -1;
+  $taxi.x = victim.x - $taxi.w/2;
+  $taxi.y = $pads[victim.padIndex].y - $taxi.h - GEAR_LEN - 30;
+  $taxi.vx = 0; $taxi.vy = 1; $taxi.gear = 1;
+  for (let i = 0; i < 90 && $state === "playing"; i++) update();
+  check("landing on a waiting passenger still kills them",
+        $state === "crashed", `(${$state})`);
+
   // ── Lives come from the server, not from the local counter ──
   const w5 = goOnline();
   check("lives start from the server's number", $lives === 3, `(${$lives})`);

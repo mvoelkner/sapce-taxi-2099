@@ -53,6 +53,16 @@ defmodule SpaceTaxiWeb.RoomChannel do
 
   # ── Authoritative actions ─────────────────────────────────
 
+  # Which pad this taxi is standing on, or -1 once it lifts off. Sent only when
+  # it changes, so the room can keep fares off pads that are already taken
+  # without holding positions.
+  def handle_in("pad", %{"pad" => pad}, socket) when is_integer(pad) do
+    Room.set_pad(socket.assigns.room, me(socket), pad)
+    {:noreply, socket}
+  end
+
+  def handle_in("pad", _payload, socket), do: {:noreply, socket}
+
   def handle_in("claim", %{"fare" => fare_id}, socket) do
     reply_and_broadcast(socket, Room.claim_fare(socket.assigns.room, me(socket), fare_id))
   end

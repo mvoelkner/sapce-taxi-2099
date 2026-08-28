@@ -232,6 +232,96 @@ defmodule SpaceTaxi.RoomTest do
     end
   end
 
+  describe "fares never appear under a parked taxi" do
+    test "a pad with someone standing on it is not used", %{room: room} do
+      {:ok, _} = join(room, "a")
+      pad_count = length(SpaceTaxi.Levels.pads(0))
+
+      # Park on every pad but one, then keep taking fares so plenty are minted
+      for {id, pad} <- Enum.zip(~w(a b c), 0..(pad_count - 2)) do
+        join(room, id)
+        :ok = Room.set_pad(room, id, pad)
+      end
+
+      free = pad_count - 1
+
+      for _ <- 1..20 do
+        [{fare_id, _} | _] = Enum.take(Room.snapshot(room).fares, 1)
+        {:ok, _} = Room.claim_fare(room, "a", fare_id)
+        fare = Room.snapshot(room).fares[fare_id]
+        {:ok, _} = Room.deliver_fare(room, "a", fare_id, fare.to)
+      end
+
+      for {_id, f} <- Room.snapshot(room).fares do
+        assert f.from == free,
+               "a fare was put on pad #{f.from}, where a taxi is parked"
+      end
+    end
+
+    test "taking off frees the pad again", %{room: room} do
+      {:ok, _} = join(room, "a")
+      :ok = Room.set_pad(room, "a", 0)
+      :ok = Room.set_pad(room, "a", -1)
+
+      # With nothing parked anywhere, every pad is fair game again
+      seen =
+        for _ <- 1..40, reduce: MapSet.new() do
+          acc ->
+            [{fare_id, _} | _] = Enum.take(Room.snapshot(room).fares, 1)
+            from = Room.snapshot(room).fares[fare_id].from
+            {:ok, _} = Room.claim_fare(room, "a", fare_id)
+            fare = Room.snapshot(room).fares[fare_id]
+            {:ok, _} = Room.deliver_fare(room, "a", fare_id, fare.to)
+            MapSet.put(acc, from)
+        end
+
+      assert MapSet.size(seen) > 1
+    end
+
+    test "leaving frees the pad the player was on", %{room: room} do
+      {:ok, _} = join(room, "a")
+      {:ok, _} = join(room, "b")
+      :ok = Room.set_pad(room, "b", 0)
+      :ok = Room.leave(room, "b")
+
+      seen =
+        for _ <- 1..40, reduce: MapSet.new() do
+          acc ->
+            [{fare_id, _} | _] = Enum.take(Room.snapshot(room).fares, 1)
+            from = Room.snapshot(room).fares[fare_id].from
+            {:ok, _} = Room.claim_fare(room, "a", fare_id)
+            fare = Room.snapshot(room).fares[fare_id]
+            {:ok, _} = Room.deliver_fare(room, "a", fare_id, fare.to)
+            MapSet.put(acc, from)
+        end
+
+      assert 0 in seen, "pad 0 stayed blocked by a player who is gone"
+    end
+
+    test "with every pad taken, no fare is put out at all", %{room: room} do
+      pads = length(SpaceTaxi.Levels.pads(0))
+      ids = Enum.map(0..(pads - 1), &"p#{&1}")
+      for id <- ids, do: join(room, id)
+      for {id, pad} <- Enum.zip(ids, 0..(pads - 1)), do: Room.set_pad(room, id, pad)
+
+      # Clear the board, then check nothing refills onto an occupied pad
+      for {fare_id, _} <- Room.snapshot(room).fares do
+        {:ok, _} = Room.claim_fare(room, hd(ids), fare_id)
+        fare = Room.snapshot(room).fares[fare_id]
+        {:ok, _} = Room.deliver_fare(room, hd(ids), fare_id, fare.to)
+      end
+
+      # An empty board beats one that drops a passenger under a taxi
+      assert map_size(Room.snapshot(room).fares) == 0
+    end
+
+    test "an unknown pad index is ignored rather than trusted", %{room: room} do
+      {:ok, _} = join(room, "a")
+      assert :ok = Room.set_pad(room, "a", 99)
+      assert :ok = Room.set_pad(room, "a", -7)
+    end
+  end
+
   describe "the fare board shrinks too" do
     test "a departure takes the surplus fare with it", %{room: room} do
       for id <- ~w(a b c d), do: join(room, id)

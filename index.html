@@ -1265,6 +1265,19 @@ function netTick() {
   }
 }
 
+// Which pad this taxi is standing on. Reported on change only — the room needs
+// it to keep fares off occupied pads, and a passenger appearing under a parked
+// taxi destroys it, so this is not cosmetic.
+let reportedPad = -1;
+
+function netReportPad() {
+  if (!netActive() || !taxi) return;
+  const pad = taxi.landed ? taxi.landedPad : -1;
+  if (pad === reportedPad) return;
+  reportedPad = pad;
+  netSend(netTopic(), "pad", { pad });
+}
+
 function sendPosition() {
   netSend(netTopic(), "pos", {
     x: Math.round(taxi.x * 10) / 10,
@@ -1463,6 +1476,11 @@ function syncFaresFromServer() {
     if (f.claimed_by && f.claimed_by !== myPlayerId) continue;
     if (passengers.some(p => p.fareId === id)) continue;
     if (!pads[f.from] || !pads[f.to]) continue;
+    // The room keeps fares off occupied pads, but a taxi can touch down in the
+    // same instant one is minted. Whoever was already parked there did not fly
+    // into anybody, so that race must not cost them a life — they are simply
+    // the taxi this passenger walks to.
+    const bornUnderTaxi = taxi && taxi.landed && taxi.landedPad === f.from;
     passengers.push({
       fareId: id,
       padIndex: f.from,
@@ -1472,6 +1490,7 @@ function syncFaresFromServer() {
       active: true,
       heyTimer: 0,
       heyCount: 0,
+      spawnedUnderTaxi: bornUnderTaxi,
       index: passengers.length,
     });
   }
@@ -1803,7 +1822,7 @@ function update() {
   // ─ Passenger logic ─
   // Online the room hands out fares; the local board would only invent extras
   // that nobody else can see.
-  if (netActive()) { netTick(); updateRemoteCollisions(); }
+  if (netActive()) { netTick(); netReportPad(); updateRemoteCollisions(); }
   else updateFareBoard();
 
   for (const p of passengers) {
@@ -1827,8 +1846,15 @@ function update() {
       }
       p.heyTimer++;
 
+      // A fare that appeared beneath an already-parked taxi is not a landing
+      // accident — nobody flew into anybody. The flag clears the moment that
+      // taxi lifts off, so the rule applies again on the way back down.
+      if (p.spawnedUnderTaxi && !(taxi.landed && taxi.landedPad === p.padIndex)) {
+        p.spawnedUnderTaxi = false;
+      }
+
       // Land on top of them and they are gone
-      if (rectOverlap(
+      if (!p.spawnedUnderTaxi && rectOverlap(
             { x: taxi.x, y: taxi.y, w: taxi.w, h: taxi.h + gearDrop },
             { x: p.x - PERSON_HALF_W, y: pad.y - 14, w: PERSON_HALF_W * 2, h: 14 })) {
         crash("PASSENGER CRUSHED!");
@@ -1901,7 +1927,13 @@ function update() {
   // ─ Check level complete ─
   // A fixed pool can be worked through; an economy tops itself up and therefore
   // has no last fare, so it never ends this way.
-  if (farePolicy(LEVELS[level]).refillOn !== "aboard" &&
+  //
+  // Online the room decides when a round is over, and the board is legitimately
+  // empty whenever every pad is occupied. every() on an empty array is true, so
+  // without this the client would announce a finished level the moment there
+  // was briefly nothing to collect.
+  if (!netActive() &&
+      farePolicy(LEVELS[level]).refillOn !== "aboard" &&
       passengers.every(p => p.phase === "delivered")) {
     state = "levelComplete";
     sndLevelUp();

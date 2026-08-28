@@ -72,6 +72,17 @@ defmodule SpaceTaxi.Room do
   def deliver_fare(room, player_id, fare_id, pad_index),
     do: GenServer.call(room, {:deliver, player_id, fare_id, pad_index})
 
+  @doc """
+  Tell the room which pad a player is standing on, or -1 after taking off.
+
+  The server holds no taxi positions — that is the client's business — but it
+  does have to know which pads are occupied, or a fare gets put out underneath a
+  parked taxi and kills it on the spot. Sent only when the pad changes, so this
+  is a handful of messages a minute rather than part of the position stream.
+  """
+  def set_pad(room, player_id, pad_index),
+    do: GenServer.call(room, {:set_pad, player_id, pad_index})
+
   def collide(room, a, b), do: GenServer.call(room, {:collide, a, b})
   def hit(room, player_id, reason), do: GenServer.call(room, {:hit, player_id, reason})
   def award(room, player_id, points), do: GenServer.call(room, {:award, player_id, points})
@@ -96,6 +107,8 @@ defmodule SpaceTaxi.Room do
        phase: :running,
        winner: nil,
        recent_collisions: %{},
+       # player id -> pad index they are parked on
+       occupied: %{},
        rand: :rand.seed_s(:exsss, {seed, seed + 1, seed + 2}),
        next_fare: 0
      }}
@@ -118,6 +131,8 @@ defmodule SpaceTaxi.Room do
       state
       |> release_fares_of(id)
       |> update_in([:players], &Map.delete(&1, id))
+      # Their taxi went with them, so the pad is free again
+      |> update_in([:occupied], &Map.delete(&1, id))
       # Fewer players want fewer fares. Without this the pads keep every
       # passenger a busier room put out, and one player is left looking at a
       # crowd nobody is coming to collect.
@@ -172,6 +187,26 @@ defmodule SpaceTaxi.Room do
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  def handle_call({:set_pad, player_id, pad_index}, _from, state) do
+    pad_count = length(Levels.pads(state.level))
+
+    state =
+      cond do
+        not Map.has_key?(state.players, player_id) ->
+          state
+
+        # -1 means airborne; anything outside the level is a client talking
+        # nonsense and is treated as airborne rather than trusted.
+        is_integer(pad_index) and pad_index >= 0 and pad_index < pad_count ->
+          put_in(state.occupied[player_id], pad_index)
+
+        true ->
+          update_in(state.occupied, &Map.delete(&1, player_id))
+      end
+
+    {:reply, :ok, state}
   end
 
   def handle_call({:collide, a, b}, _from, state) do
@@ -357,11 +392,16 @@ defmodule SpaceTaxi.Room do
 
   defp add_fare(state) do
     pads = Levels.pads(state.level)
+    # A passenger appearing under a parked taxi blows it up on the spot, so the
+    # pads people are standing on are off limits. An empty board is the better
+    # of the two outcomes when every pad is taken; the next take-off frees one.
+    free = Enum.to_list(0..(length(pads) - 1)//1) -- Map.values(state.occupied)
 
-    if length(pads) < 2 do
+    if length(pads) < 2 or free == [] do
       state
     else
-      {from, state} = random_index(state, length(pads))
+      {pick, state} = random_index(state, length(free))
+      from = Enum.at(free, pick)
       {offset, state} = random_index(state, length(pads) - 1)
       # Never deliver to the pickup pad: skipping over it keeps the draw uniform
       to = rem(from + 1 + offset, length(pads))

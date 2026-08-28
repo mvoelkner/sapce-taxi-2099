@@ -248,6 +248,40 @@ check("a crash costs exactly one life", loser.$lives === livesBefore - 1,
 check("and the other client is told", winner.$roomState.players[loser.$myPlayerId].lives === livesBefore - 1,
       `(${winner.$roomState.players[loser.$myPlayerId].lives})`);
 
+// ── No passenger may appear under a parked taxi ──
+// One did, and it blew the taxi up. Both clients are parked on pads here, so
+// every fare the room mints while they sit there has to go elsewhere.
+{
+  const parkedPads = new Set([A, B]
+    .filter(c => c.$taxi.landed)
+    .map(c => c.$taxi.landedPad));
+
+  check("at least one taxi is parked for this", parkedPads.size > 0,
+        `(${JSON.stringify([A.$taxi.landed, B.$taxi.landed])})`);
+
+  const offending = [];
+  for (let round = 0; round < 12; round++) {
+    const carrier = [A, B].find(c => !c.$taxi.hasPassenger &&
+                                     c.$passengers.some(p => p.phase === "waiting"));
+    if (!carrier) break;
+    for (const c of [A, B]) {
+      for (const p of c.$passengers) {
+        if (p.phase === "waiting" && parkedPads.has(p.padIndex) &&
+            !p.spawnedUnderTaxi) {
+          offending.push(`${p.fareId}@pad${p.padIndex}`);
+        }
+      }
+    }
+    // Move a fare along so the room mints a replacement
+    const fare = carrier.$passengers.find(p => p.phase === "waiting");
+    parkBeside(carrier, fare);
+    await pump([A, B], 200);
+  }
+
+  check("no fare was put on a pad someone is standing on",
+        offending.length === 0, JSON.stringify(offending));
+}
+
 // ── A wrecked player must still be findable by someone joining afterwards ──
 // This is the "four players listed, three taxis on screen" report: a wrecked
 // taxi stops simulating, so it used to stop reporting where it was, and anyone
