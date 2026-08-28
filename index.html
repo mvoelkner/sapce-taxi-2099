@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Space Taxi 2099 - Based on C64 Classic</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="theme-color" content="#40318d">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Space Taxi">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
 
@@ -350,7 +357,7 @@ function sndSad() {
 function sndFuelWarn() {
   beep(300,.1,"square",0.06);
   setTimeout(()=>beep(300,.1,"square",0.06),200);
-  vibrate([30, 70, 30]);
+  haptic(HAPTICS.fuelWarn);
 }
 
 // ── Rocket engine (continuous filtered noise) ───────────────
@@ -466,7 +473,7 @@ function sndHeyTaxi() {
   ensureAudio();
   loadHeyTaxiSample();
   if (!playHeyTaxiSample()) heyTaxiBeeps();
-  vibrate([25, 50, 25]);
+  haptic(HAPTICS.shout);
 }
 
 // ── Explosion sample ────────────────────────────────────────
@@ -553,6 +560,27 @@ const HAPTIC_MAP = {
   rumble:   { web: 220,           native: ["impact", "HEAVY"]         },
 };
 
+// ── Install and offline support ─────────────────────────────
+// The manifest and this worker exist so the game can be installed and played
+// offline — both preconditions for the native package rather than ends in
+// themselves. Registration is guarded three ways because it is worthless in
+// each of those cases and throws in the first.
+function registerServiceWorker() {
+  try {
+    // file:// has no origin a worker could be scoped to
+    if (location.protocol !== "http:" && location.protocol !== "https:") return;
+    // Inside Capacitor the app is already served from the bundle; a worker
+    // would cache a copy of files that are on the device anyway.
+    if (window.Capacitor && window.Capacitor.isNativePlatform &&
+        window.Capacitor.isNativePlatform()) return;
+    if (!navigator.serviceWorker) return;
+    const reg = navigator.serviceWorker.register("sw.js", { scope: "./" });
+    if (reg && reg.catch) reg.catch(() => {});
+  } catch (e) {
+    // An install failure must never cost the player the game
+  }
+}
+
 function nativeHaptics() {
   const cap = window.Capacitor;
   if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
@@ -566,9 +594,13 @@ function haptic(kind) {
   if (plugin) {
     const [call, arg] = spec.native;
     try {
-      // A misbehaving plugin must not take a landing down with it
-      if (call === "impact") plugin.impact({ style: arg });
-      else plugin.notification({ type: arg });
+      // A misbehaving plugin must not take a landing down with it. The catch
+      // covers a throw; the .catch covers a rejected promise, which the plugin
+      // methods return and which try/catch alone would let escape as an
+      // unhandled rejection.
+      const p = call === "impact" ? plugin.impact({ style: arg })
+                                  : plugin.notification({ type: arg });
+      if (p && p.catch) p.catch(() => {});
     } catch (e) {}
     return;
   }
@@ -580,18 +612,25 @@ function vibrate(pattern) {
   try { navigator.vibrate(pattern); } catch (e) {}
 }
 
-// Continuous thrust rumble. navigator.vibrate has no sustained mode, so a
-// 220ms buzz is re-issued every 200ms to overlap into a steady rumble.
-// Android only — iOS ignores the Vibration API entirely — and it does cost
-// battery. RUMBLE_STEPS is 12 simulation steps = 200ms at the fixed timestep.
+// Continuous thrust rumble. Neither backend has a sustained mode, so a pulse is
+// re-issued every 200ms and the overlap reads as one steady rumble. It costs
+// battery on both. RUMBLE_STEPS is 12 simulation steps = 200ms at the fixed
+// timestep; the web pulse is 220ms so it runs into the next one.
 const RUMBLE_STEPS = 12;
 let rumbleTick = 0;
 let rumbling = false;
 
+function hapticsAvailable() {
+  return !!(navigator.vibrate || nativeHaptics());
+}
+
 function setThrustHaptics(active) {
-  if (!navigator.vibrate) return;
+  // Not a navigator.vibrate check any more: that API is missing on iOS, which
+  // is the one platform the native build exists to reach — guarding on it would
+  // have switched the rumble off exactly there.
+  if (!hapticsAvailable()) return;
   if (active) {
-    if (rumbleTick <= 0) { vibrate(220); rumbleTick = RUMBLE_STEPS; }
+    if (rumbleTick <= 0) { haptic(HAPTICS.rumble); rumbleTick = RUMBLE_STEPS; }
     rumbleTick--;
     rumbling = true;
   } else if (rumbling) {
@@ -602,6 +641,8 @@ function setThrustHaptics(active) {
 function stopRumble() {
   rumbling = false;
   rumbleTick = 0;
+  // Only the web backend has anything to cancel: a taptic pulse is an event,
+  // not a state, so there is nothing left running to switch off.
   if (!navigator.vibrate) return;
   try { navigator.vibrate(0); } catch (e) {}
 }
@@ -1024,17 +1065,33 @@ let myPlayerId = null;
 let roomState = null;
 const remotes = new Map();       // player id -> interpolated taxi
 
+// Used when the page has no origin worth deriving from: a double-clicked file,
+// or the native bundle, where the app's own origin is not a server.
+const DEFAULT_SERVER = "ws://localhost:4000/socket/websocket";
+
 function netUrl() {
   try {
+    // 1. The query string, which is how the web build is pointed anywhere
     const forced = new URLSearchParams(location.search).get("server");
     if (forced) return forced;
-    // Opened by double-click there is no host to derive anything from, so fall
-    // back to a server running locally.
-    if (location.protocol === "file:") return "ws://localhost:4000/socket/websocket";
-    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-    return scheme + "//" + location.host + "/socket/websocket";
+
+    // 2. Baked into the copied page by scripts/build-www.js. An app does not
+    //    launch with a query string, so this is how the native package is told
+    //    where its server is.
+    const meta = document.querySelector('meta[name="taxi-server"]');
+    const configured = meta && meta.getAttribute("content");
+    if (configured) return configured;
+
+    // 3. The page's own origin — right when client and server ship together,
+    //    and only meaningful over http(s). capacitor: and file: both land below.
+    if (location.protocol === "http:" || location.protocol === "https:") {
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      return scheme + "//" + location.host + "/socket/websocket";
+    }
+
+    return DEFAULT_SERVER;
   } catch (e) {
-    return "ws://localhost:4000/socket/websocket";
+    return DEFAULT_SERVER;
   }
 }
 
@@ -1332,7 +1389,7 @@ function updateRemoteCollisions() {
     // Shown at once; the life itself arrives with the server's next state.
     spawnExplosion(taxi.x + taxi.w/2, taxi.y + taxi.h/2);
     sndExplosion() || sndCrash();
-    vibrate([60, 40, 120]);
+    haptic(HAPTICS.crash);
     addMessage("BANG!", taxi.x + taxi.w/2, taxi.y - 20, C.lightRed, 60);
   }
 }
@@ -1576,7 +1633,7 @@ function tryTouchdown(surface, snap, gearDrop, wasAirborne) {
 function touchdownFeedback(impactVy) {
   const hard = impactVy > 1.0;
   beep(hard ? 90 : 150, hard ? 0.09 : 0.05, "square", hard ? 0.09 : 0.04);
-  vibrate(hard ? [55] : [18]);
+  haptic(hard ? HAPTICS.landHard : HAPTICS.landSoft);
 }
 
 // ── Collision helpers ───────────────────────────────────────
@@ -1852,7 +1909,7 @@ function crash(reason = "CRASHED!") {
   spawnExplosion(taxi.x + taxi.w/2, taxi.y + taxi.h/2);
   showExplosion(taxi.x + taxi.w/2, taxi.y + taxi.h/2);
   if (!sndExplosion()) sndCrash();
-  vibrate([60, 40, 120]);
+  haptic(HAPTICS.crash);
   loseLife(reason);
 }
 
@@ -1860,7 +1917,7 @@ function crash(reason = "CRASHED!") {
 // the passenger is not, so it gets its own sound rather than the crash noise.
 function refuelViolation() {
   sndSad();
-  vibrate([180]);
+  haptic(HAPTICS.penalty);
   loseLife("NO REFUELLING WITH A FARE!");
 }
 
@@ -2755,6 +2812,7 @@ window.addEventListener("blur",  () => { windowBlurred = true;  applyPauseState(
 window.addEventListener("focus", () => { windowBlurred = false; applyPauseState(); });
 
 layoutCanvas();
+registerServiceWorker();
 requestAnimationFrame(gameLoop);
 
 })();

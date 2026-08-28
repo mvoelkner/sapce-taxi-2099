@@ -1074,6 +1074,7 @@ console.log("\n=== 9q. Talking to the server ===");
   check("connecting opens exactly one socket", sockets.length === 1, `(${sockets.length})`);
   check("the url is derived from where the page is served",
         ws.url.startsWith("ws://game.test/socket/websocket"), `(${ws.url})`);
+
   check("the protocol version is pinned", ws.url.includes("vsn=2.0.0"), `(${ws.url})`);
   check("it reports itself as connecting", $netState === "connecting", `(${$netState})`);
 
@@ -1175,6 +1176,47 @@ console.log("\n=== 9q. Talking to the server ===");
           `(${JSON.stringify(w.frames().map(f => f[3]))})`);
   }
   $state = "playing";
+
+  // ── Where the URL comes from when there is no origin to derive it from ──
+  {
+    const before = globalThis.location.protocol;
+    const realQuery = globalThis.document.querySelector;
+    const openTo = () => {
+      netDisconnect(); sockets.length = 0;
+      netConnect("r");
+      const s = sockets[sockets.length - 1];
+      return (s && s.url) || "";
+    };
+
+    // Inside the native shell the page comes from the app bundle, so its own
+    // origin is not a server. Deriving from it would give ws://localhost/.
+    globalThis.location.protocol = "capacitor:";
+    check("a native origin falls back rather than pointing at itself",
+          openTo().startsWith("ws://localhost:4000/"), `(${openTo()})`);
+
+    globalThis.location.protocol = "file:";
+    check("so does file://", openTo().startsWith("ws://localhost:4000/"), `(${openTo()})`);
+
+    // The package build bakes the real address into the copied index.html,
+    // because an app never launches with a query string.
+    globalThis.document.querySelector = sel =>
+      sel === 'meta[name="taxi-server"]'
+        ? { getAttribute: () => "wss://taxi.example/socket/websocket" } : null;
+    check("a baked-in address wins over the fallback",
+          openTo().startsWith("wss://taxi.example/"), `(${openTo()})`);
+
+    globalThis.location.protocol = "https:";
+    check("and over deriving from the origin",
+          openTo().startsWith("wss://taxi.example/"), `(${openTo()})`);
+
+    globalThis.location.search = "?server=ws%3A%2F%2Fforced.test%2Fsock";
+    check("but ?server= still beats everything",
+          openTo().startsWith("ws://forced.test/sock"), `(${openTo()})`);
+
+    globalThis.location.search = "";
+    globalThis.document.querySelector = realQuery;
+    globalThis.location.protocol = before;
+  }
 
   netDisconnect();
   sockets.length = 0;
@@ -1500,17 +1542,38 @@ console.log("\n=== 9s. Haptics on both backends ===");
         `(${JSON.stringify(hapticLog)})`);
 
   // ── The sustained rumble ──
-  // navigator.vibrate does not exist on iOS at all, so the old guard would have
-  // silently disabled the rumble on exactly the platform this is built for.
+  // Run this with navigator.vibrate taken away, because that is the actual iOS
+  // shape: the API is absent there. With the stub's vibrate still in place the
+  // check would pass through the web path and prove nothing about the platform
+  // the native build exists for.
+  const realNavigator = globalThis.navigator;
+  Object.defineProperty(globalThis, "navigator", {
+    value: {}, configurable: true, writable: true,
+  });
+
   hapticLog.length = 0;
   stopRumble();
   for (let i = 0; i < 40; i++) setThrustHaptics(true);
-  check("thrust rumbles natively too", hapticLog.length > 0,
-        `(${hapticLog.length} pulses in 40 steps)`);
+  check("thrust rumbles on a platform with no navigator.vibrate",
+        hapticLog.length > 0, `(${hapticLog.length} pulses in 40 steps)`);
   check("it pulses rather than firing every frame",
         hapticLog.length <= 5, `(${hapticLog.length} pulses in 40 steps)`);
   setThrustHaptics(false);
   check("letting go stops it", $rumbling === false);
+
+  // And with neither backend there must be no rumble and no crash
+  removeCapacitor();
+  hapticLog.length = 0;
+  stopRumble();
+  for (let i = 0; i < 40; i++) setThrustHaptics(true);
+  check("with no haptics at all it stays quiet",
+        hapticLog.length === 0 && $rumbling === false,
+        `(${hapticLog.length} pulses, rumbling=${$rumbling})`);
+
+  installCapacitor();
+  Object.defineProperty(globalThis, "navigator", {
+    value: realNavigator, configurable: true, writable: true,
+  });
 
   // ── An unusable plugin must not take the game down ──
   window.Capacitor.Plugins.Haptics = {
@@ -1521,8 +1584,72 @@ console.log("\n=== 9s. Haptics on both backends ===");
   try { haptic(HAPTICS.crash); touchdownFeedback(2); } catch (e) { threw = e.message; }
   check("a plugin that throws does not reach the game", threw === null, `(${threw})`);
 
+  // The real plugin methods return promises, and a rejection escapes try/catch
+  // entirely — it would surface as an unhandled rejection instead.
+  let rejections = 0;
+  const rejected = () => ({ catch: fn => { rejections++; fn(new Error("no engine")); } });
+  window.Capacitor.Plugins.Haptics = {
+    impact: rejected,
+    notification: rejected,
+  };
+  threw = null;
+  try { haptic(HAPTICS.crash); touchdownFeedback(0.2); } catch (e) { threw = e.message; }
+  check("a rejected plugin promise is handled, not left dangling",
+        threw === null && rejections === 2, `(${threw}, ${rejections} handled)`);
+
   removeCapacitor();
   $level = 0; $lives = 99; $state = "playing"; initLevel();
+}
+
+console.log("\n=== 9t. Service worker registration ===");
+{
+  const swLog = [];
+  const withSW = (over = {}) => {
+    swLog.length = 0;
+    globalThis.navigator.serviceWorker = {
+      register: (url, opts) => {
+        swLog.push({ url, opts });
+        return { then: (ok) => { ok && ok({ scope: "./" }); return { catch: () => {} }; },
+                 catch: () => {} };
+      },
+    };
+    Object.assign(globalThis.location, over);
+  };
+  const origin = { protocol: globalThis.location.protocol };
+
+  withSW({ protocol: "https:" });
+  registerServiceWorker();
+  check("it registers over https", swLog.length === 1, `(${JSON.stringify(swLog)})`);
+  check("and points at sw.js", swLog[0] && /sw\.js$/.test(swLog[0].url),
+        `(${swLog[0] && swLog[0].url})`);
+
+  withSW({ protocol: "http:" });
+  registerServiceWorker();
+  check("it registers on plain http too, for localhost", swLog.length === 1);
+
+  // A service worker cannot be registered from file://, and trying throws
+  withSW({ protocol: "file:" });
+  let threw = null;
+  try { registerServiceWorker(); } catch (e) { threw = e.message; }
+  check("it does not try under file://", swLog.length === 0, `(${JSON.stringify(swLog)})`);
+  check("and does not throw there", threw === null, `(${threw})`);
+
+  // Inside the native shell the app is loaded from the bundle; a worker there
+  // would cache the very files Capacitor is already serving locally.
+  withSW({ protocol: "https:" });
+  installCapacitor();
+  registerServiceWorker();
+  check("it stays out of the native build", swLog.length === 0, `(${JSON.stringify(swLog)})`);
+  removeCapacitor();
+
+  // A browser without support must not break the page
+  withSW({ protocol: "https:" });
+  delete globalThis.navigator.serviceWorker;
+  threw = null;
+  try { registerServiceWorker(); } catch (e) { threw = e.message; }
+  check("an unsupporting browser is simply skipped", threw === null, `(${threw})`);
+
+  Object.assign(globalThis.location, origin);
 }
 
 console.log("\n=== 10. draw() survives every state ===");

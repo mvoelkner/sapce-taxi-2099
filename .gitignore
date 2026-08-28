@@ -2,3 +2,10 @@
 /docs/superpowers/*
 /docs/superpowers
 .env
+
+# Native package. node_modules and www are both reproducible:
+#   npm install && npm run www
+# ios/ itself is committed — Capacitor's own .gitignore in there keeps Pods and
+# the copied web assets out, which leaves about two dozen real project files.
+/node_modules
+/www

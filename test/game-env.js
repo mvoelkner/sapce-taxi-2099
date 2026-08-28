@@ -18,7 +18,7 @@ Object.defineProperties(globalThis, Object.getOwnPropertyDescriptors({
   showExplosion, hideExplosion, sndExplosion, primeExplosionSound,
   farePolicy, handleInput, bootGame, MENU_ENTRIES,
   netConnect, netDisconnect, netTick, netHeartbeat, updateRemotes, netSend,
-  haptic, HAPTICS, vibrate,
+  haptic, HAPTICS, vibrate, registerServiceWorker,
   get $netState(){return netState}, get $netError(){return netError},
   get $myPlayerId(){return myPlayerId},
   get $roomState(){return roomState}, get $remotes(){return remotes},
@@ -97,6 +97,7 @@ globalThis.document = {
     id === "explosion-sound" ? explosionSoundStub :
     { ...elStub },
   querySelectorAll: () => [],
+  querySelector: () => null,
   addEventListener: noop,
   documentElement: { classList: { toggle: noop } },
   hidden: false,

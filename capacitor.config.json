@@ -1,0 +1,18 @@
+{
+  "appId": "de.voelkner.spacetaxi",
+  "appName": "Space Taxi",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#000000"
+  },
+  "android": {
+    "backgroundColor": "#000000"
+  },
+  "plugins": {
+    "Haptics": {}
+  }
+}
