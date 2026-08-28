@@ -987,7 +987,19 @@ function updateNameBadge() {
   if (!nameBadge) return;
   // German, because that is what the player asked to see next to their name
   nameBadge.textContent = playerName ? playerName + " bearbeiten" : "";
-  nameBadge.hidden = !playerName;
+  syncNameBadge();
+}
+
+// The name is only ever used online, so it has no business sitting over a
+// single player's HUD. It stays reachable in the menu, where somebody would set
+// it before going multiplayer, and throughout a multiplayer session.
+function syncNameBadge() {
+  if (!nameBadge) return;
+  const wanted = !!playerName && (state === "menu" || gameMode === "multi");
+  // Written only on a change: this runs every frame, and the DOM does not need
+  // to hear the same thing sixty times a second.
+  if (nameBadge.hidden === !wanted) return;
+  nameBadge.hidden = !wanted;
 }
 
 function openNameModal() {
@@ -3161,6 +3173,7 @@ function gameLoop(now) {
   // Outside the simulation step on purpose: both have to keep running in the
   // states where update() does not.
   netFrame();
+  syncNameBadge();
   updateRemotes();
   updateCamera();
   draw();

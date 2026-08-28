@@ -2101,6 +2101,8 @@ console.log("\n=== 9u. The pilot's name ===");
   check("the name is offered for editing",
         nameBadgeEl.textContent === "OLDNAME bearbeiten",
         `(${nameBadgeEl.textContent})`);
+  // Somewhere the badge belongs — where that is has its own checks further down
+  $gameMode = "single"; $state = "menu"; syncNameBadge();
   check("and the badge is only there once there is a name",
         nameBadgeEl.hidden === false, `(hidden=${nameBadgeEl.hidden})`);
 
@@ -2123,6 +2125,38 @@ console.log("\n=== 9u. The pilot's name ===");
   check("nor an umlaut", typed("MÜLLER") === "MLLER", `(${nameInputEl.value})`);
   check("and it stops at the limit",
         typed("ABCDEFGHIJKLMNOP").length === NAME_MAX, `(${nameInputEl.value})`);
+
+  // ── Where the badge belongs ──
+  // The name is only ever used online, so it has no business sitting over a
+  // single player's HUD. It stays reachable in the menu, where somebody would
+  // set it before going multiplayer.
+  const badgeShown = () => { syncNameBadge(); return !nameBadgeEl.hidden; };
+
+  $gameMode = "single"; $state = "menu";
+  check("the menu offers it, whichever mode is preselected", badgeShown());
+
+  $gameMode = "single"; $state = "title";
+  check("a single player run does not", !badgeShown(), "(title)");
+  $state = "playing";
+  check("nor while flying alone", !badgeShown(), "(playing)");
+  $state = "gameOver";
+  check("nor at the end of one", !badgeShown(), "(gameOver)");
+
+  $gameMode = "multi"; $state = "lobby";
+  check("the lobby offers it", badgeShown());
+  $state = "playing";
+  check("and so does a round online", badgeShown());
+  $state = "intermission";
+  check("and the screen between rounds", badgeShown());
+
+  // Nothing to offer without a name, wherever you are
+  const keepName = $playerName;
+  storage.clear();
+  bootName();
+  $gameMode = "multi"; $state = "playing";
+  check("with no name there is still nothing to show", !badgeShown());
+  submitName(keepName);
+  $gameMode = "single"; $state = "menu";
 
   openNameModal();
   check("the badge reopens the dialogue", $nameModalOpen === true);
